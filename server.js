@@ -33,7 +33,7 @@ app.post('/create-checkout-session', async (req, res) => {
           price_data: {
             currency: 'jpy',
             product_data: { name: 'Cottage SERAGAKI 宿泊予約' },
-            unit_amount: req.body.amount || 25000 * 100,
+            unit_amount: req.body.amount || 25000, // ✅ ← 100倍しない
           },
           quantity: 1,
         }
@@ -42,6 +42,19 @@ app.post('/create-checkout-session', async (req, res) => {
       success_url: 'https://stay-oceanus.com/payment_success.html',
       cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
       customer_email: req.body.email || undefined,
+      metadata: {
+        checkin: req.body.checkin || '',
+        checkout: req.body.checkout || '',
+        nights: req.body.nights || '',
+        adults: req.body.adults || '',
+        child11: req.body.child11 || '',
+        child6: req.body.child6 || '',
+        child3: req.body.child3 || '',
+        kana: req.body.kana || '',
+        kanji: req.body.kanji || '',
+        tel: req.body.tel || '',
+        detail: req.body.detail || ''
+      }
     });
     res.json({ id: session.id, url: session.url });
   } catch (err) {
