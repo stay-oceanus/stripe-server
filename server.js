@@ -1,8 +1,9 @@
 require('dotenv').config(); // ← 必ず最初に追加！
+const cors = require('cors');
 const express = require('express');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // ✅ 許可するオリジンを明示
 const allowedOrigins = [
@@ -55,6 +56,7 @@ app.get('/cancel', (req, res) => {
   res.send('決済がキャンセルされました。');
 });
 
+// ✅ listen は最後に1回だけ！
 app.listen(PORT, () => {
-  console.log(`http://localhost:${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
