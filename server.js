@@ -42,6 +42,8 @@ app.post('/create-checkout-session', async (req, res) => {
       success_url: 'https://stay-oceanus.com/payment_success.html',
       cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
       customer_email: req.body.email || undefined,
+
+      // ✅ ここに metadata を追加（GASに渡したい情報）
       metadata: {
         checkin: req.body.checkin || '',
         checkout: req.body.checkout || '',
@@ -50,9 +52,13 @@ app.post('/create-checkout-session', async (req, res) => {
         child11: req.body.child11 || '',
         child6: req.body.child6 || '',
         child3: req.body.child3 || '',
-        kana: req.body.kana || '',
-        kanji: req.body.kanji || '',
-        tel: req.body.tel || '',
+        kanaLastName: req.body.kanaLastName || '',
+        kanaFirstName: req.body.kanaFirstName || '',
+        kanjiLastName: req.body.kanjiLastName || '',
+        kanjiFirstName: req.body.kanjiFirstName || '',
+        email: req.body.email || '',
+        phone: req.body.tel || '',
+        total: req.body.amount || '',
         detail: req.body.detail || ''
       }
     });
