@@ -36,7 +36,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 
   if (event.type === 'checkout.session.completed') {
     try {
-      const response = await fetch('https://script.google.com/macros/s/AKfycbxDp3q_j4RO4-AY6FIOqhojuyzAEKSRVBvMLPAwgp0pEMAdZK6OXmWt7MOfqtETXTN1/exec', {
+      const response = await fetch('https://script.google.com/macros/s/AKfycbzRPtnAssb5eZZ8lhFAqLDqEWfrrUdgiGdfc_8zUzSZ_yFrbF6wxd7CigF_bljV_R0h/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(event) // ✅ event 全体を送る
