@@ -21,6 +21,36 @@ app.use(cors({
   }
 }));
 
+// ✅ Stripe Webhookだけは raw body を必要とするので先に分岐
+app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+  } catch (err) {
+    console.error('Webhook Error:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    try {
+      const response = await fetch('https://script.google.com/macros/s/AKfycbxDp3q_j4RO4-AY6FIOqhojuyzAEKSRVBvMLPAwgp0pEMAdZK6OXmWt7MOfqtETXTN1/exec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(event) // ✅ event 全体を送る
+      });
+      console.log('✅ GAS response:', await response.text());
+    } catch (error) {
+      console.error('❌ GAS送信失敗:', error);
+    }
+  }
+
+  res.status(200).send('Received');
+});
+
+// ✅ JSONのパース（Webhook以外）
 app.use(express.json());
 
 // ✅ チェックアウトセッション作成
@@ -32,7 +62,7 @@ app.post('/create-checkout-session', async (req, res) => {
         price_data: {
           currency: 'jpy',
           product_data: { name: 'Cottage SERAGAKI 宿泊予約' },
-          unit_amount: req.body.amount || 25000, // ✅ 円のまま（100倍しない）
+          unit_amount: req.body.amount || 25000,
         },
         quantity: 1,
       }],
@@ -64,43 +94,7 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// ✅ Stripe Webhook（決済完了後にGASに送信）
-app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
-  } catch (err) {
-    console.error('Webhook Error:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-
-    // ✅ GASへPOST
-    fetch('https://script.google.com/macros/s/AKfycbxDp3q_j4RO4-AY6FIOqhojuyzAEKSRVBvMLPAwgp0pEMAdZK6OXmWt7MOfqtETXTN1/exec', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-    type: 'checkout.session.completed',
-    data: { object: session }
-      })
-    })
-    .then(() => {
-      console.log('✅ GASへ送信完了:', session.id);
-    })
-    .catch(error => {
-      console.error('❌ GAS送信失敗:', error);
-    });
-  }
-
-  res.status(200).send('Received');
-});
-
-// ✅ 動作確認ページ（任意）
+// ✅ 動作確認ページ
 app.get('/success', (req, res) => res.send('決済が完了しました。'));
 app.get('/cancel', (req, res) => res.send('決済がキャンセルされました。'));
 
