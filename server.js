@@ -84,10 +84,15 @@ app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
     fetch('https://script.google.com/macros/s/AKfycbxDp3q_j4RO4-AY6FIOqhojuyzAEKSRVBvMLPAwgp0pEMAdZK6OXmWt7MOfqtETXTN1/exec', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(session)
-    }).then(() => {
+      body: JSON.stringify({
+    type: 'checkout.session.completed',
+    data: { object: session }
+      })
+    })
+    .then(() => {
       console.log('✅ GASへ送信完了:', session.id);
-    }).catch(error => {
+    })
+    .catch(error => {
       console.error('❌ GAS送信失敗:', error);
     });
   }
