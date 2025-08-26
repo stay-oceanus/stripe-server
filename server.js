@@ -1,11 +1,11 @@
-require('dotenv').config(); // ← 必ず最初に追加！
+require('dotenv').config();
 const cors = require('cors');
 const express = require('express');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ 許可するオリジンを明示
+// ✅ CORS 許可ドメイン
 const allowedOrigins = [
   'https://stay-oceanus.com',
   'http://localhost:5500'
@@ -13,7 +13,6 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // 開発時（ファイル直開き）など origin が null の場合も許可
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -24,26 +23,23 @@ app.use(cors({
 
 app.use(express.json());
 
+// ✅ チェックアウトセッション作成
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'konbini'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'jpy',
-            product_data: { name: 'Cottage SERAGAKI 宿泊予約' },
-            unit_amount: req.body.amount || 25000, // ✅ ← 100倍しない
-          },
-          quantity: 1,
-        }
-      ],
+      line_items: [{
+        price_data: {
+          currency: 'jpy',
+          product_data: { name: 'Cottage SERAGAKI 宿泊予約' },
+          unit_amount: req.body.amount || 25000, // ✅ 円のまま（100倍しない）
+        },
+        quantity: 1,
+      }],
       mode: 'payment',
       success_url: 'https://stay-oceanus.com/payment_success.html',
       cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
       customer_email: req.body.email || undefined,
-
-      // ✅ ここに metadata を追加（GASに渡したい情報）
       metadata: {
         checkin: req.body.checkin || '',
         checkout: req.body.checkout || '',
@@ -68,14 +64,42 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-app.get('/success', (req, res) => {
-  res.send('決済が完了しました。ご予約ありがとうございました。');
-});
-app.get('/cancel', (req, res) => {
-  res.send('決済がキャンセルされました。');
+// ✅ Stripe Webhook（決済完了後にGASに送信）
+app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret);
+  } catch (err) {
+    console.error('Webhook Error:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+
+    // ✅ GASへPOST
+    fetch('https://script.google.com/macros/s/AKfycbxDp3q_j4RO4-AY6FIOqhojuyzAEKSRVBvMLPAwgp0pEMAdZK6OXmWt7MOfqtETXTN1/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(session)
+    }).then(() => {
+      console.log('✅ GASへ送信完了:', session.id);
+    }).catch(error => {
+      console.error('❌ GAS送信失敗:', error);
+    });
+  }
+
+  res.status(200).send('Received');
 });
 
-// ✅ listen は最後に1回だけ！
+// ✅ 動作確認ページ（任意）
+app.get('/success', (req, res) => res.send('決済が完了しました。'));
+app.get('/cancel', (req, res) => res.send('決済がキャンセルされました。'));
+
+// ✅ サーバー起動
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
