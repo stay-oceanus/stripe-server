@@ -35,11 +35,16 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
   }
 
   if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+
+    // ✅ metadata をログ出力
+    console.log("📝 session.metadata:", session.metadata);
+
     try {
       const response = await fetch('https://script.google.com/macros/s/AKfycbzMyJQ52kummd889p1-1kASbt-ixpzLzzcm7JwXSGC0JtY_wIUFezXCGWWqXAmF1Uz2/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(event) // ✅ event 全体を送る
+        body: JSON.stringify(event)
       });
       console.log('✅ GAS response:', await response.text());
     } catch (error) {
