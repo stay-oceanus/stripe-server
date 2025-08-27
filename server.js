@@ -40,7 +40,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     console.log("📝 session.metadata:", session.metadata);
 
     try {
-      const response = await fetch('https://script.google.com/macros/s/AKfycbxxSoW8JaM7UQnEQBK54xxY7bbmu6TnRjWvYql0NyOmquC9jGjzBqSNOursXpLIET8D/exec', {
+      const response = await fetch('https://script.google.com/macros/s/AKfycbx4dsZBMZIaVc1N2ueDxI2jrCvdfXOxbVRvv-3BmMX-x4vUnnF-VXqyPaYT3pTZvUxf/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(event)
@@ -59,7 +59,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     console.log("🗑 キャンセル処理対象 email:", customerEmail);
 
     try {
-      const cancelResponse = await fetch('https://script.google.com/macros/s/AKfycbxxSoW8JaM7UQnEQBK54xxY7bbmu6TnRjWvYql0NyOmquC9jGjzBqSNOursXpLIET8D/exec', {
+      const cancelResponse = await fetch('https://script.google.com/macros/s/AKfycbx4dsZBMZIaVc1N2ueDxI2jrCvdfXOxbVRvv-3BmMX-x4vUnnF-VXqyPaYT3pTZvUxf/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
