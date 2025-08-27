@@ -1,6 +1,7 @@
 require('dotenv').config();
 const cors = require('cors');
 const express = require('express');
+const fetch = require('node-fetch');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -34,10 +35,9 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // ✅ 決済完了
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-
-    // ✅ metadata をログ出力
     console.log("📝 session.metadata:", session.metadata);
 
     try {
@@ -49,6 +49,29 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       console.log('✅ GAS response:', await response.text());
     } catch (error) {
       console.error('❌ GAS送信失敗:', error);
+    }
+  }
+
+  // ✅ コンビニ支払いの期限切れ → キャンセル
+  if (event.type === 'payment_intent.canceled') {
+    const paymentIntent = event.data.object;
+    const customerEmail = paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
+
+    console.log("🗑 キャンセル処理対象 email:", customerEmail);
+
+    try {
+      const cancelResponse = await fetch('https://script.google.com/macros/s/AKfycbzMyJQ52kummd889p1-1kASbt-ixpzLzzcm7JwXSGC0JtY_wIUFezXCGWWqXAmF1Uz2/exec', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'cancel_reservation',
+          email: customerEmail,
+          payment_intent: paymentIntent.id
+        })
+      });
+      console.log('✅ キャンセル通知をGASに送信:', await cancelResponse.text());
+    } catch (error) {
+      console.error('❌ GASキャンセル送信失敗:', error);
     }
   }
 
