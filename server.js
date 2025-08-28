@@ -20,6 +20,19 @@ async function postToGAS(payload) {
   }
 }
 
+async function postToGAS(payload) {
+  try {
+    const response = await fetch(GAS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    console.log('✅ GAS response:', await response.text());
+  } catch (error) {
+    console.error('❌ GAS送信失敗:', error);
+  }
+}
+
 // ✅ CORS 許可ドメイン
 const allowedOrigins = [
   'https://stay-oceanus.com',
@@ -49,11 +62,8 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // ✅ 決済完了（カード決済やコンビニ支払いの開始/完了）
-  if (
-    event.type === 'checkout.session.completed' ||
-    event.type === 'checkout.session.async_payment_succeeded'
-  ) {
+  // ✅ チェックアウト完了（カード決済 or コンビニ支払い待ち）
+  if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const payload = {
       type: event.type,
@@ -63,6 +73,30 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     };
 
     await postToGAS(payload);
+  } else if (event.type === 'payment_intent.succeeded') {
+    // ✅ コンビニ支払い完了（checkout.session.async_payment_succeeded の代替）
+    const paymentIntent = event.data.object;
+    try {
+      const sessions = await stripe.checkout.sessions.list({
+        payment_intent: paymentIntent.id,
+        limit: 1
+      });
+      const session = sessions.data[0];
+      if (session) {
+        const payload = {
+          type: 'checkout.session.async_payment_succeeded',
+          data: { object: session },
+          payment_status: session.payment_status,
+          payment_method: session.payment_method_types?.[0] || ''
+        };
+
+        await postToGAS(payload);
+      } else {
+        console.log('⚠️ 対応する Checkout Session が見つかりません: ', paymentIntent.id);
+      }
+    } catch (error) {
+      console.error('❌ Checkout Session 取得失敗:', error);
+    }
   } else if (event.type === 'payment_intent.canceled') {
     // ✅ コンビニ支払いの期限切れ → キャンセル
     const paymentIntent = event.data.object;
