@@ -5,7 +5,20 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const GAS_ENDPOINT =
-  'https://script.google.com/macros/s/AKfycby1zt9dnjmn-qL6weN37X7NsT46YTIxAoIBJ9LkJeBL2sXOnY5mOFMhRYafCIGpTLYe/exec';
+  'https://script.google.com/macros/s/AKfycbyKY51Y8LEmNsFLSSpsepaU5_hcT3FaJPHacoXK2urf9lK8EjJXmSDRIJkJ0uFbtb8K/exec';
+
+async function postToGAS(payload) {
+  try {
+    const response = await fetch(GAS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    console.log('✅ GAS response:', await response.text());
+  } catch (error) {
+    console.error('❌ GAS送信失敗:', error);
+  }
+}
 
 async function postToGAS(payload) {
   try {
