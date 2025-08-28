@@ -5,7 +5,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const GAS_ENDPOINT =
-  'https://script.google.com/macros/s/AKfycbx4dsZBMZIaVc1N2ueDxI2jrCvdfXOxbVRvv-3BmMX-x4vUnnF-VXqyPaYT3pTZvUxf/exec';
+  'https://script.google.com/macros/s/AKfycby1zt9dnjmn-qL6weN37X7NsT46YTIxAoIBJ9LkJeBL2sXOnY5mOFMhRYafCIGpTLYe/exec';
 
 // ✅ CORS 許可ドメイン
 const allowedOrigins = [
