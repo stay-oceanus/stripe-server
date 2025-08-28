@@ -34,16 +34,26 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // ✅ 決済完了
-  if (event.type === 'checkout.session.completed') {
+  // ✅ 決済完了・コンビニ決済待ち
+  if (
+    event.type === 'checkout.session.completed' ||
+    event.type === 'checkout.session.async_payment_pending'
+  ) {
     const session = event.data.object;
     console.log("📝 session.metadata:", session.metadata);
 
     try {
+      const payload = {
+        type: event.type,
+        data: { object: session },
+        payment_status: session.payment_status,
+        payment_method: session.payment_method_types?.[0] || ''
+      };
+
       const response = await fetch('https://script.google.com/macros/s/AKfycbx4dsZBMZIaVc1N2ueDxI2jrCvdfXOxbVRvv-3BmMX-x4vUnnF-VXqyPaYT3pTZvUxf/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(event)
+        body: JSON.stringify(payload)
       });
       console.log('✅ GAS response:', await response.text());
     } catch (error) {
