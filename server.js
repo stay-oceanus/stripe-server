@@ -36,10 +36,13 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // ✅ 決済完了（カード決済やコンビニ支払いの開始）
-  if (event.type === 'checkout.session.completed') {
+  // ✅ コンビニ支払いの開始・完了（未払い/支払い済み）
+  if (
+    event.type === 'checkout.session.completed' ||
+    event.type === 'checkout.session.async_payment_succeeded'
+  ) {
     const session = event.data.object;
-    console.log("📝 session.metadata:", session.metadata);
+    console.log('📝 session.metadata:', session.metadata);
 
     try {
       const payload = {
@@ -60,33 +63,6 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     }
   }
 
-  // ✅ コンビニ支払い完了
-  if (event.type === 'payment_intent.succeeded') {
-    const paymentIntent = event.data.object;
-    const customerEmail =
-      paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
-
-    console.log('💰 コンビニ支払い完了 email:', customerEmail);
-
-    try {
-      const successResponse = await fetch(GAS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'konbini_paid',
-          email: customerEmail,
-          payment_intent: paymentIntent.id
-        })
-      });
-      console.log(
-        '✅ コンビニ支払い完了をGASに送信:',
-        await successResponse.text()
-      );
-    } catch (error) {
-      console.error('❌ コンビニ支払い完了送信失敗:', error);
-    }
-  }
-
   // ✅ コンビニ支払いの期限切れ → キャンセル
   if (event.type === 'payment_intent.canceled') {
     const paymentIntent = event.data.object;
@@ -95,7 +71,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     console.log("🗑 キャンセル処理対象 email:", customerEmail);
 
     try {
-      const cancelResponse = await fetch(GAS_ENDPOINT, {
+      const response = await fetch(GAS_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -104,9 +80,9 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
           payment_intent: paymentIntent.id
         })
       });
-      console.log('✅ キャンセル通知をGASに送信:', await cancelResponse.text());
+      console.log('✅ GAS response:', await response.text());
     } catch (error) {
-      console.error('❌ GASキャンセル送信失敗:', error);
+      console.error('❌ GAS送信失敗:', error);
     }
   }
 
