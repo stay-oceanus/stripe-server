@@ -47,7 +47,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         payment_method: session.payment_method_types?.[0] || ''
       };
 
-      const response = await fetch('https://script.google.com/macros/s/AKfycbx4dsZBMZIaVc1N2ueDxI2jrCvdfXOxbVRvv-3BmMX-x4vUnnF-VXqyPaYT3pTZvUxf/exec', {
+      const response = await fetch('https://script.google.com/macros/s/AKfycby1zt9dnjmn-qL6weN37X7NsT46YTIxAoIBJ9LkJeBL2sXOnY5mOFMhRYafCIGpTLYe/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -66,7 +66,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     console.log("🗑 キャンセル処理対象 email:", customerEmail);
 
     try {
-      const cancelResponse = await fetch('https://script.google.com/macros/s/AKfycbx4dsZBMZIaVc1N2ueDxI2jrCvdfXOxbVRvv-3BmMX-x4vUnnF-VXqyPaYT3pTZvUxf/exec', {
+      const cancelResponse = await fetch('https://script.google.com/macros/s/AKfycby1zt9dnjmn-qL6weN37X7NsT46YTIxAoIBJ9LkJeBL2sXOnY5mOFMhRYafCIGpTLYe/exec', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
