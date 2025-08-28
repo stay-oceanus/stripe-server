@@ -7,6 +7,19 @@ const PORT = process.env.PORT || 3000;
 const GAS_ENDPOINT =
   'https://script.google.com/macros/s/AKfycby1zt9dnjmn-qL6weN37X7NsT46YTIxAoIBJ9LkJeBL2sXOnY5mOFMhRYafCIGpTLYe/exec';
 
+async function postToGAS(payload) {
+  try {
+    const response = await fetch(GAS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    console.log('✅ GAS response:', await response.text());
+  } catch (error) {
+    console.error('❌ GAS送信失敗:', error);
+  }
+}
+
 // ✅ CORS 許可ドメイン
 const allowedOrigins = [
   'https://stay-oceanus.com',
@@ -36,54 +49,33 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // ✅ コンビニ支払いの開始・完了（未払い/支払い済み）
+  // ✅ 決済完了（カード決済やコンビニ支払いの開始/完了）
   if (
     event.type === 'checkout.session.completed' ||
     event.type === 'checkout.session.async_payment_succeeded'
   ) {
     const session = event.data.object;
-    console.log('📝 session.metadata:', session.metadata);
+    const payload = {
+      type: event.type,
+      data: { object: session },
+      payment_status: session.payment_status,
+      payment_method: session.payment_method_types?.[0] || ''
+    };
 
-    try {
-      const payload = {
-        type: event.type,
-        data: { object: session },
-        payment_status: session.payment_status,
-        payment_method: session.payment_method_types?.[0] || ''
-      };
-
-      const response = await fetch(GAS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      console.log('✅ GAS response:', await response.text());
-    } catch (error) {
-      console.error('❌ GAS送信失敗:', error);
-    }
-  }
-
-  // ✅ コンビニ支払いの期限切れ → キャンセル
-  if (event.type === 'payment_intent.canceled') {
+    await postToGAS(payload);
+  } else if (event.type === 'payment_intent.canceled') {
+    // ✅ コンビニ支払いの期限切れ → キャンセル
     const paymentIntent = event.data.object;
-    const customerEmail = paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
+    const customerEmail =
+      paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
+    console.log('🗑 キャンセル処理対象 email:', customerEmail);
+    const payload = {
+      type: 'cancel_reservation',
+      email: customerEmail,
+      payment_intent: paymentIntent.id
+    };
 
-    console.log("🗑 キャンセル処理対象 email:", customerEmail);
-
-    try {
-      const response = await fetch(GAS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'cancel_reservation',
-          email: customerEmail,
-          payment_intent: paymentIntent.id
-        })
-      });
-      console.log('✅ GAS response:', await response.text());
-    } catch (error) {
-      console.error('❌ GAS送信失敗:', error);
-    }
+    await postToGAS(payload);
   }
 
   res.status(200).send('Received');
