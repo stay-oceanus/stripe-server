@@ -7,6 +7,19 @@ const PORT = process.env.PORT || 3000;
 const GAS_ENDPOINT =
   'https://script.google.com/macros/s/AKfycby1zt9dnjmn-qL6weN37X7NsT46YTIxAoIBJ9LkJeBL2sXOnY5mOFMhRYafCIGpTLYe/exec';
 
+async function postToGAS(payload) {
+  try {
+    const response = await fetch(GAS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    console.log('✅ GAS response:', await response.text());
+  } catch (error) {
+    console.error('❌ GAS送信失敗:', error);
+  }
+}
+
 // ✅ CORS 許可ドメイン
 const allowedOrigins = [
   'https://stay-oceanus.com',
@@ -36,78 +49,54 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // ✅ 決済完了（カード決済やコンビニ支払いの開始）
+  // ✅ チェックアウト完了（カード決済 or コンビニ支払い待ち）
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    console.log("📝 session.metadata:", session.metadata);
+    const payload = {
+      type: event.type,
+      data: { object: session },
+      payment_status: session.payment_status,
+      payment_method: session.payment_method_types?.[0] || ''
+    };
 
+    await postToGAS(payload);
+  } else if (event.type === 'payment_intent.succeeded') {
+    // ✅ コンビニ支払い完了（checkout.session.async_payment_succeeded の代替）
+    const paymentIntent = event.data.object;
     try {
-      const payload = {
-        type: event.type,
-        data: { object: session },
-        payment_status: session.payment_status,
-        payment_method: session.payment_method_types?.[0] || ''
-      };
-
-      const response = await fetch(GAS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+      const sessions = await stripe.checkout.sessions.list({
+        payment_intent: paymentIntent.id,
+        limit: 1
       });
-      console.log('✅ GAS response:', await response.text());
-    } catch (error) {
-      console.error('❌ GAS送信失敗:', error);
-    }
-  }
+      const session = sessions.data[0];
+      if (session) {
+        const payload = {
+          type: 'checkout.session.async_payment_succeeded',
+          data: { object: session },
+          payment_status: session.payment_status,
+          payment_method: session.payment_method_types?.[0] || ''
+        };
 
-  // ✅ コンビニ支払い完了
-  if (event.type === 'payment_intent.succeeded') {
+        await postToGAS(payload);
+      } else {
+        console.log('⚠️ 対応する Checkout Session が見つかりません: ', paymentIntent.id);
+      }
+    } catch (error) {
+      console.error('❌ Checkout Session 取得失敗:', error);
+    }
+  } else if (event.type === 'payment_intent.canceled') {
+    // ✅ コンビニ支払いの期限切れ → キャンセル
     const paymentIntent = event.data.object;
     const customerEmail =
       paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
+    console.log('🗑 キャンセル処理対象 email:', customerEmail);
+    const payload = {
+      type: 'cancel_reservation',
+      email: customerEmail,
+      payment_intent: paymentIntent.id
+    };
 
-    console.log('💰 コンビニ支払い完了 email:', customerEmail);
-
-    try {
-      const successResponse = await fetch(GAS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'konbini_paid',
-          email: customerEmail,
-          payment_intent: paymentIntent.id
-        })
-      });
-      console.log(
-        '✅ コンビニ支払い完了をGASに送信:',
-        await successResponse.text()
-      );
-    } catch (error) {
-      console.error('❌ コンビニ支払い完了送信失敗:', error);
-    }
-  }
-
-  // ✅ コンビニ支払いの期限切れ → キャンセル
-  if (event.type === 'payment_intent.canceled') {
-    const paymentIntent = event.data.object;
-    const customerEmail = paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
-
-    console.log("🗑 キャンセル処理対象 email:", customerEmail);
-
-    try {
-      const cancelResponse = await fetch(GAS_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'cancel_reservation',
-          email: customerEmail,
-          payment_intent: paymentIntent.id
-        })
-      });
-      console.log('✅ キャンセル通知をGASに送信:', await cancelResponse.text());
-    } catch (error) {
-      console.error('❌ GASキャンセル送信失敗:', error);
-    }
+    await postToGAS(payload);
   }
 
   res.status(200).send('Received');
