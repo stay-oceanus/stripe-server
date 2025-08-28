@@ -34,8 +34,11 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // ✅ 決済完了
-  if (event.type === 'checkout.session.completed') {
+  // ✅ 決済完了・コンビニ決済待ち
+  if (
+    event.type === 'checkout.session.completed' ||
+    event.type === 'checkout.session.async_payment_pending'
+  ) {
     const session = event.data.object;
     console.log("📝 session.metadata:", session.metadata);
 
