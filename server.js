@@ -60,6 +60,33 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     }
   }
 
+  // ✅ コンビニ支払い完了
+  if (event.type === 'payment_intent.succeeded') {
+    const paymentIntent = event.data.object;
+    const customerEmail =
+      paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
+
+    console.log('💰 コンビニ支払い完了 email:', customerEmail);
+
+    try {
+      const successResponse = await fetch(GAS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'konbini_paid',
+          email: customerEmail,
+          payment_intent: paymentIntent.id
+        })
+      });
+      console.log(
+        '✅ コンビニ支払い完了をGASに送信:',
+        await successResponse.text()
+      );
+    } catch (error) {
+      console.error('❌ コンビニ支払い完了送信失敗:', error);
+    }
+  }
+
   // ✅ コンビニ支払いの期限切れ → キャンセル
   if (event.type === 'payment_intent.canceled') {
     const paymentIntent = event.data.object;
