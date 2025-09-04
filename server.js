@@ -5,7 +5,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const GAS_ENDPOINT =
-  'https://script.google.com/macros/s/AKfycbxDNZugBuox7upLF5aWEobHm3Lffr6xF2jxH1gbt0lJf_I_1Bneo0H6OhANxZdFV2VU/exec';
+  'https://script.google.com/macros/s/AKfycbzZ_JEWWu4tZuPGZm3s6UnOYv2Hpr_HcRw9g7CeVL-4v1yshta5ldGYhRmvvhpNINQg/exec';
 
 async function postToGAS(payload) {
   try {
