@@ -7,19 +7,7 @@ const PORT = process.env.PORT || 3000;
 const GAS_ENDPOINT =
   'https://script.google.com/macros/s/AKfycbwYFX2zCxD78ArQYloxURkovtkrAmaVzVefCFHGWw7wNJH7OpYKlNw6lq1iTr-IdS6K/exec';
 
-async function postToGAS(payload) {
-  try {
-    const response = await fetch(GAS_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    console.log('✅ GAS response:', await response.text());
-  } catch (error) {
-    console.error('❌ GAS送信失敗:', error);
-  }
-}
-
+// ✅ GASへPOST送信
 async function postToGAS(payload) {
   try {
     const response = await fetch(GAS_ENDPOINT, {
@@ -121,38 +109,40 @@ app.use(express.json());
 // ✅ チェックアウトセッション作成
 app.post('/create-checkout-session', async (req, res) => {
   try {
+    // フロントから送られてきた予約データ
+    const reservationData = req.body.reservationData || {};
+    const reservationJson = JSON.stringify(reservationData);
+
+    // Stripe セッション作成（metadataは最小限）
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'konbini'],
       line_items: [{
         price_data: {
           currency: 'jpy',
           product_data: { name: 'Cottage SERAGAKI 宿泊予約' },
-          unit_amount: req.body.amount || 25000,
+          unit_amount: reservationData.amount || 25000,
         },
         quantity: 1,
       }],
       mode: 'payment',
       success_url: 'https://stay-oceanus.com/payment_success.html',
       cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
-      customer_email: req.body.email || undefined,
+      customer_email: reservationData.email || undefined,
       metadata: {
-        checkin: req.body.checkin || '',
-        checkout: req.body.checkout || '',
-        nights: req.body.nights || '',
-        adults: req.body.adults || '',
-        child11: req.body.child11 || '',
-        child6: req.body.child6 || '',
-        child3: req.body.child3 || '',
-        kanaLastName: req.body.kanaLastName || '',
-        kanaFirstName: req.body.kanaFirstName || '',
-        kanjiLastName: req.body.kanjiLastName || '',
-        kanjiFirstName: req.body.kanjiFirstName || '',
-        email: req.body.email || '',
-        phone: req.body.tel || '',
-        total: req.body.amount || '',
-        detail: req.body.detail || ''
+        email: reservationData.email || '',
+        checkin: reservationData.checkin || '',
+        checkout: reservationData.checkout || '',
+        total: reservationData.amount || ''
       }
     });
+
+    // GASに予約データを送信（仮登録）
+    await postToGAS({
+      type: 'provisional_reservation',
+      sessionId: session.id,
+      reservation_json: reservationJson
+    });
+
     res.json({ id: session.id, url: session.url });
   } catch (err) {
     res.status(500).json({ error: err.message });
