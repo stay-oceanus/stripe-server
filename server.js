@@ -10,6 +10,7 @@ const GAS_ENDPOINT =
 // ✅ GASへPOST送信
 async function postToGAS(payload) {
   try {
+    console.log('📤 Sending payload to GAS:', JSON.stringify(payload));
     const response = await fetch(GAS_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -91,22 +92,25 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     };
 
     await postToGAS(payload);
-}
+  }
+
+  res.status(200).send('Received');
+});
 
 function buildCheckoutPayload(type, session) {
   const metadata = session.metadata || {};
   const reservationJson = metadata.reservation_json || null;
+
   return {
     type,
-    data: { object: session },
+    sessionId: session.id,
+    payment_intent: session.payment_intent || '',
+    reservation_json: reservationJson,
+    metadata,
     payment_status: session.payment_status,
-    payment_method: session.payment_method_types?.[0] || '',
-    reservation_json: reservationJson
+    payment_method: session.payment_method_types?.[0] || ''
   };
 }
-
-  res.status(200).send('Received');
-});
 
 // ✅ JSONのパース（Webhook以外）
 app.use(express.json());
@@ -164,12 +168,33 @@ app.post('/create-checkout-session', async (req, res) => {
 
     const reservationJson = JSON.stringify(enrichedReservationData);
 
+    if (reservationJson.length <= 500) {
+      try {
+        await stripe.checkout.sessions.update(session.id, {
+          metadata: { reservation_json: reservationJson }
+        });
+        session.metadata = {
+          ...session.metadata,
+          reservation_json: reservationJson
+        };
+      } catch (metadataError) {
+        console.error('❌ Failed to attach reservation_json to metadata:', metadataError);
+      }
+    } else {
+      console.warn(
+        '⚠️ reservation_json length exceeds Stripe metadata limit; skipping metadata attachment.'
+      );
+    }
+
     // GASに予約データを送信（仮登録）
     await postToGAS({
       type: 'provisional_reservation',
       sessionId: session.id,
       payment_intent: session.payment_intent || '',
-      reservation_json: reservationJson
+      reservation_json: reservationJson,
+      metadata: session.metadata || {},
+      payment_status: session.payment_status,
+      payment_method: session.payment_method_types?.[0] || ''
     });
 
     res.json({ id: session.id, url: session.url });
