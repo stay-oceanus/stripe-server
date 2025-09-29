@@ -10,6 +10,7 @@ const GAS_ENDPOINT =
 // ✅ GASへPOST送信
 async function postToGAS(payload) {
   try {
+    console.log('📤 Sending payload to GAS:', JSON.stringify(payload));
     const response = await fetch(GAS_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -91,7 +92,10 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     };
 
     await postToGAS(payload);
-}
+  }
+
+  res.status(200).send('Received');
+});
 
 function buildCheckoutPayload(type, session) {
   const metadata = session.metadata || {};
@@ -107,9 +111,6 @@ function buildCheckoutPayload(type, session) {
     payment_method: session.payment_method_types?.[0] || ''
   };
 }
-
-  res.status(200).send('Received');
-});
 
 // ✅ JSONのパース（Webhook以外）
 app.use(express.json());
