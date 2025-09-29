@@ -110,17 +110,31 @@ app.use(express.json());
 app.post('/create-checkout-session', async (req, res) => {
   try {
     // フロントから送られてきた予約データ
-    const reservationData = req.body.reservationData || {};
-    const reservationJson = JSON.stringify(reservationData);
+    let reservationData = req.body.reservationData || {};
+
+    // フロントで JSON.stringify 済みの文字列が渡ってくるケースに対応
+    if (typeof reservationData === 'string') {
+      try {
+        reservationData = JSON.parse(reservationData);
+      } catch (parseError) {
+        console.error('❌ reservationData の JSON パースに失敗:', parseError);
+        reservationData = {};
+      }
+    }
 
     // Stripe セッション作成（metadataは最小限）
+    const parsedAmount = Number(reservationData.amount);
+    const unitAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
+      ? Math.round(parsedAmount)
+      : 25000;
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'konbini'],
       line_items: [{
         price_data: {
           currency: 'jpy',
           product_data: { name: 'Cottage SERAGAKI 宿泊予約' },
-          unit_amount: reservationData.amount || 25000,
+          unit_amount: unitAmount,
         },
         quantity: 1,
       }],
@@ -132,14 +146,24 @@ app.post('/create-checkout-session', async (req, res) => {
         email: reservationData.email || '',
         checkin: reservationData.checkin || '',
         checkout: reservationData.checkout || '',
-        total: reservationData.amount || ''
+        total: String(unitAmount || '')
       }
     });
+
+    const enrichedReservationData = {
+      ...reservationData,
+      amount: unitAmount,
+      sessionId: session.id,
+      payment_intent: session.payment_intent || ''
+    };
+
+    const reservationJson = JSON.stringify(enrichedReservationData);
 
     // GASに予約データを送信（仮登録）
     await postToGAS({
       type: 'provisional_reservation',
       sessionId: session.id,
+      payment_intent: session.payment_intent || '',
       reservation_json: reservationJson
     });
 
