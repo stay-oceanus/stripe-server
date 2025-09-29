@@ -53,12 +53,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
   // ✅ チェックアウト完了（カード決済 or コンビニ支払い待ち）
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
-    const payload = {
-      type: event.type,
-      data: { object: session },
-      payment_status: session.payment_status,
-      payment_method: session.payment_method_types?.[0] || ''
-    };
+    const payload = buildCheckoutPayload(event.type, session);
 
     await postToGAS(payload);
   } else if (event.type === 'payment_intent.succeeded') {
@@ -71,12 +66,10 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       });
       const session = sessions.data[0];
       if (session) {
-        const payload = {
-          type: 'checkout.session.async_payment_succeeded',
-          data: { object: session },
-          payment_status: session.payment_status,
-          payment_method: session.payment_method_types?.[0] || ''
-        };
+        const payload = buildCheckoutPayload(
+          'checkout.session.async_payment_succeeded',
+          session
+        );
 
         await postToGAS(payload);
       } else {
@@ -98,7 +91,19 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     };
 
     await postToGAS(payload);
-  }
+}
+
+function buildCheckoutPayload(type, session) {
+  const metadata = session.metadata || {};
+  const reservationJson = metadata.reservation_json || null;
+  return {
+    type,
+    data: { object: session },
+    payment_status: session.payment_status,
+    payment_method: session.payment_method_types?.[0] || '',
+    reservation_json: reservationJson
+  };
+}
 
   res.status(200).send('Received');
 });
