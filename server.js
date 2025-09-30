@@ -99,13 +99,11 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 
 function buildCheckoutPayload(type, session) {
   const metadata = session.metadata || {};
-  const reservationJson = metadata.reservation_json || null;
 
   return {
     type,
     sessionId: session.id,
     payment_intent: session.payment_intent || '',
-    reservation_json: reservationJson,
     metadata,
     payment_status: session.payment_status,
     payment_method: session.payment_method_types?.[0] || ''
@@ -155,43 +153,20 @@ app.post('/create-checkout-session', async (req, res) => {
         email: reservationData.email || '',
         checkin: reservationData.checkin || '',
         checkout: reservationData.checkout || '',
+        nights: reservationData.nights || '',
+        adults: reservationData.adults || '',
+        child11: reservationData.child11 || '',
+        child6: reservationData.child6 || '',
+        child3: reservationData.child3 || '',
         total: String(unitAmount || '')
       }
     });
-
-    const enrichedReservationData = {
-      ...reservationData,
-      amount: unitAmount,
-      sessionId: session.id,
-      payment_intent: session.payment_intent || ''
-    };
-
-    const reservationJson = JSON.stringify(enrichedReservationData);
-
-    if (reservationJson.length <= 500) {
-      try {
-        await stripe.checkout.sessions.update(session.id, {
-          metadata: { reservation_json: reservationJson }
-        });
-        session.metadata = {
-          ...session.metadata,
-          reservation_json: reservationJson
-        };
-      } catch (metadataError) {
-        console.error('❌ Failed to attach reservation_json to metadata:', metadataError);
-      }
-    } else {
-      console.warn(
-        '⚠️ reservation_json length exceeds Stripe metadata limit; skipping metadata attachment.'
-      );
-    }
 
     // GASに予約データを送信（仮登録）
     await postToGAS({
       type: 'provisional_reservation',
       sessionId: session.id,
       payment_intent: session.payment_intent || '',
-      reservation_json: reservationJson,
       metadata: session.metadata || {},
       payment_status: session.payment_status,
       payment_method: session.payment_method_types?.[0] || ''
