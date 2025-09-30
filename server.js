@@ -68,10 +68,49 @@ async function forwardEventToGas(payload) {
   }
 }
 
-// ✅ Checkout セッション作成エンドポイント
-app.use(express.urlencoded({ extended: true })); // form-urlencoded 用
+// ✅ Webhookは raw ボディを使う必要があるので最初に定義する
+app.post(
+  '/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const signature = req.headers['stripe-signature'];
+    let event;
+
+    try {
+      if (!webhookSecret) {
+        throw new Error('STRIPE_WEBHOOK_SECRET is not configured.');
+      }
+
+      event = stripe.webhooks.constructEvent(
+        req.body, // Bufferのまま
+        signature,
+        webhookSecret
+      );
+    } catch (err) {
+      console.error('Webhook signature verification failed:', err.message);
+      res.status(400).send(`Webhook Error: ${err.message}`);
+      return;
+    }
+
+    try {
+      if (event.type && event.type.startsWith('checkout.session.')) {
+        const payload = buildCheckoutPayload(event);
+        await forwardEventToGas(payload);
+      }
+
+      res.json({ received: true });
+    } catch (err) {
+      console.error('Failed to forward event to GAS:', err.message);
+      res.status(500).send(`Forward Error: ${err.message}`);
+    }
+  }
+);
+
+// ✅ 他のルートは JSON パーサーを使う
+app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '1mb' }));
 
+// ✅ Checkout セッション作成エンドポイント
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { amount, email, ...rest } = req.body;
@@ -95,7 +134,7 @@ app.post('/create-checkout-session', async (req, res) => {
           price_data: {
             currency: 'jpy',
             product_data: { name: '宿泊予約' },
-            unit_amount: Number(amount), // ✅ 金額は「円単位」
+            unit_amount: Number(amount), // ✅ 円単位
           },
           quantity: 1,
         },
@@ -104,7 +143,7 @@ app.post('/create-checkout-session', async (req, res) => {
       customer_email: email || undefined,
       success_url: 'https://stay-oceanus.com/success.html',
       cancel_url: 'https://stay-oceanus.com/cancel.html',
-      metadata, // ✅ 文字列化済みのmetadataをセット
+      metadata, // ✅ 文字列化済みmetadata
     });
 
     res.json({ url: session.url });
@@ -113,44 +152,6 @@ app.post('/create-checkout-session', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// ✅ Stripe Webhook 受信
-app.post(
-  '/webhook',
-  express.raw({ type: 'application/json' }),
-  async (req, res) => {
-    const signature = req.headers['stripe-signature'];
-    let event;
-
-    try {
-      if (!webhookSecret) {
-        throw new Error('STRIPE_WEBHOOK_SECRET is not configured.');
-      }
-
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        signature,
-        webhookSecret
-      );
-    } catch (err) {
-      console.error('Webhook signature verification failed:', err.message);
-      res.status(400).send(`Webhook Error: ${err.message}`);
-      return;
-    }
-
-    try {
-      if (event.type && event.type.startsWith('checkout.session.')) {
-        const payload = buildCheckoutPayload(event);
-        await forwardEventToGas(payload);
-      }
-
-      res.json({ received: true });
-    } catch (err) {
-      console.error('Failed to forward event to GAS:', err.message);
-      res.status(500).send(`Forward Error: ${err.message}`);
-    }
-  }
-);
 
 // ✅ ヘルスチェック
 app.get('/health', (_req, res) => {
