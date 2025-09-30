@@ -69,7 +69,7 @@ async function forwardEventToGas(payload) {
 }
 
 // ✅ Checkout セッション作成エンドポイント
-app.use(express.urlencoded({ extended: true })); // フロントからの form-urlencoded 用
+app.use(express.urlencoded({ extended: true })); // form-urlencoded 用
 app.use(express.json({ limit: '1mb' }));
 
 app.post('/create-checkout-session', async (req, res) => {
@@ -80,16 +80,22 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
+    // ✅ metadataを文字列化してフラットに整形
+    const metadata = {};
+    for (const [key, value] of Object.entries(rest)) {
+      if (value !== null && value !== undefined && value !== '') {
+        metadata[key] = String(value);
+      }
+    }
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'konbini'], // ✅ カード＋コンビニ払い
       line_items: [
         {
           price_data: {
             currency: 'jpy',
-            product_data: {
-              name: '宿泊予約',
-            },
-            unit_amount: Number(amount), // フロントから円単位で送る想定
+            product_data: { name: '宿泊予約' },
+            unit_amount: Number(amount), // ✅ 金額は「円単位」
           },
           quantity: 1,
         },
@@ -98,7 +104,7 @@ app.post('/create-checkout-session', async (req, res) => {
       customer_email: email || undefined,
       success_url: 'https://stay-oceanus.com/success.html',
       cancel_url: 'https://stay-oceanus.com/cancel.html',
-      metadata: rest,
+      metadata, // ✅ 文字列化済みのmetadataをセット
     });
 
     res.json({ url: session.url });
