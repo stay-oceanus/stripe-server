@@ -21,13 +21,6 @@ app.use(cors());
 
 /**
  * Normalises the Stripe checkout session payload that will be delivered to GAS.
- * The Apps Script previously only read `event.data.object`, but now it can fall
- * back to top-level properties when `data.object` is unavailable. To maintain
- * compatibility, we include both the nested structure and the duplicated
- * top-level fields so that GAS can read whichever format it expects.
- *
- * @param {object} event The Stripe event object.
- * @returns {object} Payload forwarded to GAS.
  */
 function buildCheckoutPayload(event) {
   const session = (event && event.data && event.data.object) || {};
@@ -75,6 +68,47 @@ async function forwardEventToGas(payload) {
   }
 }
 
+// ✅ Checkout セッション作成エンドポイント
+app.use(express.urlencoded({ extended: true })); // フロントからの form-urlencoded 用
+app.use(express.json({ limit: '1mb' }));
+
+app.post('/create-checkout-session', async (req, res) => {
+  try {
+    const { amount, email, ...rest } = req.body;
+
+    if (!amount || isNaN(amount)) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card', 'konbini'], // ✅ カード＋コンビニ払い
+      line_items: [
+        {
+          price_data: {
+            currency: 'jpy',
+            product_data: {
+              name: '宿泊予約',
+            },
+            unit_amount: Number(amount), // フロントから円単位で送る想定
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      customer_email: email || undefined,
+      success_url: 'https://stay-oceanus.com/success.html',
+      cancel_url: 'https://stay-oceanus.com/cancel.html',
+      metadata: rest,
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Error creating checkout session:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ Stripe Webhook 受信
 app.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
@@ -112,8 +146,7 @@ app.post(
   }
 );
 
-app.use(express.json({ limit: '1mb' }));
-
+// ✅ ヘルスチェック
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
