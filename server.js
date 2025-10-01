@@ -141,8 +141,8 @@ app.post('/create-checkout-session', async (req, res) => {
       ],
       mode: 'payment',
       customer_email: email || undefined,
-      success_url: 'https://stay-oceanus.com/success.html',
-      cancel_url: 'https://stay-oceanus.com/cancel.html',
+      success_url: 'https://stay-oceanus.com/payment_success.html',
+      cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
       metadata, // ✅ 文字列化済みmetadata
     });
 
