@@ -40,9 +40,6 @@ function buildCheckoutPayload(event) {
       session.customer_email ||
       null,
     metadata: session.metadata || event.metadata || {},
-    data: {
-      object: session,
-    },
   };
 }
 
