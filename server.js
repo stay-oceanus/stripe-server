@@ -119,11 +119,15 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    // ✅ metadataを文字列化してフラットに整形
+    // ✅ metadataを文字列化してフラットに整形（オブジェクト対応）
     const metadata = {};
     for (const [key, value] of Object.entries(rest)) {
       if (value !== null && value !== undefined && value !== '') {
-        metadata[key] = String(value);
+        if (typeof value === 'object') {
+          metadata[key] = JSON.stringify(value);
+        } else {
+          metadata[key] = String(value);
+        }
       }
     }
 
