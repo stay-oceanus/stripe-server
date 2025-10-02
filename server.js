@@ -19,30 +19,6 @@ const stripe = stripeLib(stripeSecretKey);
 
 app.use(cors());
 
-/**
- * Normalises the Stripe checkout session payload that will be delivered to GAS.
- */
-function buildCheckoutPayload(event) {
-  const session = (event && event.data && event.data.object) || {};
-
-  return {
-    type: event.type,
-    created: event.created,
-    livemode: event.livemode,
-    sessionId: session.id || event.sessionId || event.id || null,
-    id: session.id || null,
-    payment_intent: session.payment_intent || event.payment_intent || null,
-    payment_status: session.payment_status || event.payment_status || null,
-    payment_method_types:
-      session.payment_method_types || event.payment_method_types || [],
-    customer_email:
-      (session.customer_details && session.customer_details.email) ||
-      session.customer_email ||
-      null,
-    metadata: session.metadata || event.metadata || {},
-  };
-}
-
 async function forwardEventToGas(payload) {
   if (!gasWebhookUrl) {
     console.warn('GAS webhook URL is not configured; skipping forward.');
@@ -90,8 +66,40 @@ app.post(
     }
 
     try {
-      if (event.type && event.type.startsWith('checkout.session.')) {
-        const payload = buildCheckoutPayload(event);
+      if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+        const payload = {
+          type: event.type,
+          data: { object: session },
+          payment_status: session.payment_status,
+          payment_method: session.payment_method_types?.[0] || '',
+        };
+        await forwardEventToGas(payload);
+      } else if (event.type === 'payment_intent.succeeded') {
+        const paymentIntent = event.data.object;
+        const sessions = await stripe.checkout.sessions.list({
+          payment_intent: paymentIntent.id,
+          limit: 1,
+        });
+        const session = sessions.data[0];
+        if (session) {
+          const payload = {
+            type: 'checkout.session.async_payment_succeeded',
+            data: { object: session },
+            payment_status: session.payment_status,
+            payment_method: session.payment_method_types?.[0] || '',
+          };
+          await forwardEventToGas(payload);
+        }
+      } else if (event.type === 'payment_intent.canceled') {
+        const paymentIntent = event.data.object;
+        const customerEmail =
+          paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
+        const payload = {
+          type: 'cancel_reservation',
+          email: customerEmail,
+          payment_intent: paymentIntent.id,
+        };
         await forwardEventToGas(payload);
       }
 
@@ -110,23 +118,29 @@ app.use(express.json({ limit: '1mb' }));
 // ✅ Checkout セッション作成エンドポイント
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    const { amount, email, ...rest } = req.body;
+    const { amount, email } = req.body;
 
     if (!amount || isNaN(amount)) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    // ✅ metadataを文字列化してフラットに整形（オブジェクト対応）
-    const metadata = {};
-    for (const [key, value] of Object.entries(rest)) {
-      if (value !== null && value !== undefined && value !== '') {
-        if (typeof value === 'object') {
-          metadata[key] = JSON.stringify(value);
-        } else {
-          metadata[key] = String(value);
-        }
-      }
-    }
+    const metadata = {
+      checkin: req.body.checkin || '',
+      checkout: req.body.checkout || '',
+      nights: req.body.nights || '',
+      adults: req.body.adults || '',
+      child11: req.body.child11 || '',
+      child6: req.body.child6 || '',
+      child3: req.body.child3 || '',
+      kanaLastName: req.body.kanaLastName || '',
+      kanaFirstName: req.body.kanaFirstName || '',
+      kanjiLastName: req.body.kanjiLastName || '',
+      kanjiFirstName: req.body.kanjiFirstName || '',
+      email: req.body.email || '',
+      phone: req.body.tel || '',
+      total: req.body.amount || '',
+      detail: req.body.detail || '',
+    };
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'konbini'], // ✅ カード＋コンビニ払い
@@ -144,7 +158,7 @@ app.post('/create-checkout-session', async (req, res) => {
       customer_email: email || undefined,
       success_url: 'https://stay-oceanus.com/payment_success.html',
       cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
-      metadata, // ✅ 文字列化済みmetadata
+      metadata,
     });
 
     res.json({ url: session.url });
@@ -162,7 +176,3 @@ app.get('/health', (_req, res) => {
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
-
-module.exports = {
-  buildCheckoutPayload,
-};
