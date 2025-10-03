@@ -124,23 +124,14 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    const metadata = {
-      checkin: req.body.checkin || '',
-      checkout: req.body.checkout || '',
-      nights: req.body.nights || '',
-      adults: req.body.adults || '',
-      child11: req.body.child11 || '',
-      child6: req.body.child6 || '',
-      child3: req.body.child3 || '',
-      kanaLastName: req.body.kanaLastName || '',
-      kanaFirstName: req.body.kanaFirstName || '',
-      kanjiLastName: req.body.kanjiLastName || '',
-      kanjiFirstName: req.body.kanjiFirstName || '',
-      email: req.body.email || '',
-      phone: req.body.tel || '',
-      total: req.body.amount || '',
-      detail: req.body.detail || '',
-    };
+    // 👇 フロントから metadata[xxx] 形式で送られてくるので req.body.metadata に展開される
+    const metadata = req.body.metadata || {};
+
+    // email, phone, total など直下で送られてくる可能性がある項目は補完
+    metadata.email = metadata.email || req.body.email || '';
+    metadata.phone = metadata.phone || req.body.tel || '';
+    metadata.total = metadata.total || req.body.amount || '';
+    metadata.detail = metadata.detail || '';
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'konbini'], // ✅ カード＋コンビニ払い
@@ -158,7 +149,7 @@ app.post('/create-checkout-session', async (req, res) => {
       customer_email: email || undefined,
       success_url: 'https://stay-oceanus.com/payment_success.html',
       cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
-      metadata,
+      metadata, // 👈 ここに正しくチェックイン情報などが渡る
     });
 
     res.json({ url: session.url });
