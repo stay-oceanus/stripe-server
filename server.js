@@ -25,27 +25,19 @@ async function forwardEventToGas(payload) {
     return;
   }
 
-  try {
-    const response = await fetch(gasWebhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
+  const response = await fetch(gasWebhookUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
 
+  if (!response.ok) {
     const text = await response.text();
-    console.log('[GAS webhook] status:', response.status, 'body:', text);
-
-    if (!response.ok) {
-      throw new Error(
-        `Failed to forward event to GAS (${response.status}): ${text}`
-      );
-    }
-    return text;
-  } catch (err) {
-    console.error('[GAS webhook] fetch error:', err);
-    throw err;
+    throw new Error(
+      `Failed to forward event to GAS (${response.status}): ${text}`
+    );
   }
 }
 
@@ -81,7 +73,6 @@ app.post(
           data: { object: session },
           payment_status: session.payment_status,
           payment_method: session.payment_method_types?.[0] || '',
-          metadata: session.metadata || {}, // 追加: metadataを必ず含める
         };
         await forwardEventToGas(payload);
       } else if (event.type === 'payment_intent.succeeded') {
@@ -97,7 +88,6 @@ app.post(
             data: { object: session },
             payment_status: session.payment_status,
             payment_method: session.payment_method_types?.[0] || '',
-            metadata: session.metadata || {}, // 追加: metadataを必ず含める
           };
           await forwardEventToGas(payload);
         }
@@ -128,46 +118,38 @@ app.use(express.json({ limit: '1mb' }));
 // ✅ Checkout セッション作成エンドポイント
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    // application/x-www-form-urlencoded でも application/json でも対応
-    const body = req.body || {};
-    // metadata[xxx]=... 形式で来た場合も対応
-    const metadata = {};
-    // 1. metadata[xxx] 形式を抽出
-    for (const key in body) {
-      if (key.startsWith('metadata[') && key.endsWith(']')) {
-        const metaKey = key.slice(9, -1);
-        metadata[metaKey] = body[key];
-      }
-    }
-    // 2. 直接の値も優先してセット（空文字は除外）
-    const metaKeys = [
-      'checkin', 'checkout', 'nights', 'adults', 'child11', 'child6', 'child3',
-      'kanaLastName', 'kanaFirstName', 'kanjiLastName', 'kanjiFirstName',
-      'email', 'phone', 'total', 'detail'
-    ];
-    metaKeys.forEach(k => {
-      if (body[k] !== undefined && body[k] !== null && body[k] !== '') {
-        metadata[k] = body[k];
-      }
-    });
-
-    // 3. Stripe へ渡す値
-    const amount = body.amount || metadata.total;
-    const email = body.email || metadata.email;
+    const { amount, email } = req.body;
 
     if (!amount || isNaN(amount)) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    // 4. Stripe へ metadata を必ずオブジェクトで渡す
+    const metadata = {
+      checkin: req.body.checkin || '',
+      checkout: req.body.checkout || '',
+      nights: req.body.nights || '',
+      adults: req.body.adults || '',
+      child11: req.body.child11 || '',
+      child6: req.body.child6 || '',
+      child3: req.body.child3 || '',
+      kanaLastName: req.body.kanaLastName || '',
+      kanaFirstName: req.body.kanaFirstName || '',
+      kanjiLastName: req.body.kanjiLastName || '',
+      kanjiFirstName: req.body.kanjiFirstName || '',
+      email: req.body.email || '',
+      phone: req.body.tel || '',
+      total: req.body.amount || '',
+      detail: req.body.detail || '',
+    };
+
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card', 'konbini'],
+      payment_method_types: ['card', 'konbini'], // ✅ カード＋コンビニ払い
       line_items: [
         {
           price_data: {
             currency: 'jpy',
             product_data: { name: '宿泊予約' },
-            unit_amount: Number(amount),
+            unit_amount: Number(amount), // ✅ 円単位
           },
           quantity: 1,
         },
