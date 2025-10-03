@@ -81,6 +81,7 @@ app.post(
           data: { object: session },
           payment_status: session.payment_status,
           payment_method: session.payment_method_types?.[0] || '',
+          metadata: session.metadata || {}, // 追加: metadataを必ず含める
         };
         await forwardEventToGas(payload);
       } else if (event.type === 'payment_intent.succeeded') {
@@ -96,6 +97,7 @@ app.post(
             data: { object: session },
             payment_status: session.payment_status,
             payment_method: session.payment_method_types?.[0] || '',
+            metadata: session.metadata || {}, // 追加: metadataを必ず含める
           };
           await forwardEventToGas(payload);
         }
