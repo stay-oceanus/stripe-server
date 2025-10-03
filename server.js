@@ -67,6 +67,7 @@ app.post(
 
     try {
       if (event.type === 'checkout.session.completed') {
+        // ✅ 正常に支払いが完了したときのみ GAS へ送信
         const session = event.data.object;
         const payload = {
           type: event.type,
@@ -75,23 +76,8 @@ app.post(
           payment_method: session.payment_method_types?.[0] || '',
         };
         await forwardEventToGas(payload);
-      } else if (event.type === 'payment_intent.succeeded') {
-        const paymentIntent = event.data.object;
-        const sessions = await stripe.checkout.sessions.list({
-          payment_intent: paymentIntent.id,
-          limit: 1,
-        });
-        const session = sessions.data[0];
-        if (session) {
-          const payload = {
-            type: 'checkout.session.async_payment_succeeded',
-            data: { object: session },
-            payment_status: session.payment_status,
-            payment_method: session.payment_method_types?.[0] || '',
-          };
-          await forwardEventToGas(payload);
-        }
       } else if (event.type === 'payment_intent.canceled') {
+        // ✅ キャンセル時のみ GAS へ送信
         const paymentIntent = event.data.object;
         const customerEmail =
           paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
