@@ -69,21 +69,26 @@ app.post(
       if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
 
-        // 支払い方法がコンビニなら「支払い待ち」で記録
-        let status =
-          session.payment_method_types?.[0] === 'konbini'
-            ? '支払い待ち'
-            : '支払い完了';
+        // ✅ checkout.session.completed の時点では:
+        // カード: 支払い完了
+        // コンビニ: 支払い待ち
+        let paymentMethod = 'card';
+        let status = '支払い完了';
+
+        if (session.payment_method_types.includes('konbini')) {
+          paymentMethod = 'konbini';
+          status = '支払い待ち';
+        }
 
         const payload = {
           type: event.type,
           data: { object: session },
           payment_status: status,
-          payment_method: session.payment_method_types?.[0] || '',
+          payment_method: paymentMethod,
         };
         await forwardEventToGas(payload);
       } else if (event.type === 'payment_intent.succeeded') {
-        // コンビニ支払い完了時
+        // ✅ コンビニ支払い完了時
         const paymentIntent = event.data.object;
         const sessions = await stripe.checkout.sessions.list({
           payment_intent: paymentIntent.id,
@@ -95,12 +100,12 @@ app.post(
             type: 'payment_intent.succeeded',
             data: { object: session },
             payment_status: '支払い完了',
-            payment_method: session.payment_method_types?.[0] || '',
+            payment_method: 'konbini',
           };
           await forwardEventToGas(payload);
         }
       } else if (event.type === 'payment_intent.canceled') {
-        // コンビニ支払い期限切れ・キャンセル時
+        // ✅ コンビニ支払い期限切れ・キャンセル時
         const paymentIntent = event.data.object;
         const customerEmail =
           paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
@@ -109,6 +114,7 @@ app.post(
           email: customerEmail,
           payment_intent: paymentIntent.id,
           payment_status: 'キャンセル',
+          payment_method: 'konbini',
         };
         await forwardEventToGas(payload);
       }
