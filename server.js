@@ -183,3 +183,60 @@ app.get('/health', (_req, res) => {
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
+
+// ✅ 管理者用:カスタムセッション作成エンドポイント
+app.post('/create-custom-session', async (req, res) => {
+  // ✅ 認証チェック（不正アクセス防止）
+  const authHeader = req.headers['authorization'];
+  if (authHeader !== `Bearer ${process.env.ADMIN_TOKEN}`) {
+    return res.status(403).json({ error: 'Forbidden: invalid token' });
+  }
+
+  try {
+    const { comment, checkin, checkout, amount, email } = req.body;
+    const metadata = { comment, checkin, checkout, createdBy: 'admin' };
+
+    // ✅ Stripe Checkout セッション生成
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      customer_email: email,
+      line_items: [
+        {
+          price_data: {
+            currency: 'jpy',
+            product_data: { name: '個別予約（管理者発行）' },
+            unit_amount: amount,
+          },
+          quantity: 1,
+        },
+      ],
+      metadata,
+      success_url: 'https://stay-oceanus.com/success.html',
+      cancel_url: 'https://stay-oceanus.com/cancel.html',
+    });
+
+    // ✅ GASへ仮予約通知（スプレッドシート記録）
+    await fetch(process.env.GAS_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'provisional_reservation',
+        sessionId: session.id,
+        reservation_json: JSON.stringify({
+          comment,
+          checkin,
+          checkout,
+          amount,
+          email,
+          createdBy: 'admin'
+        })
+      })
+    });
+
+    res.json({ url: session.url });
+
+  } catch (error) {
+    console.error('❌ Custom session error:', error);
+    res.status(500).json({ error: 'Session creation failed' });
+  }
+});
