@@ -200,17 +200,23 @@ app.post('/create-checkout-session', async (req, res) => {
 
 // ✅ 管理者専用カスタムセッション作成
 app.post('/create-custom-session', async (req, res) => {
-  // === テストモード時: 管理者以外をブロック ===
-  if (mode !== 'live') {
+  const mode = process.env.APP_MODE || 'test';
+  const adminToken = process.env.ADMIN_TOKEN;
+  const testAccessKey = process.env.TEST_ACCESS_KEY;
+  const gasWebhookUrl = process.env.GAS_WEBHOOK_URL;
+
+  // === 本番モードでも管理者なら許可 ===
+  // （テストモード時はTEST_ACCESS_KEYで制御）
+  if (mode === 'test') {
     const accessKey = req.headers['authorization']?.replace('Bearer ', '');
-    if (accessKey !== testAccessKey) {
+    if (accessKey !== testAccessKey && accessKey !== adminToken) {
       return res.status(503).json({
         error: '現在メンテナンス中です。（管理者発行は停止中）',
       });
     }
   }
 
-  // ✅ 管理者認証（既存）
+  // ✅ 管理者認証（必須）
   const authHeader = req.headers['authorization'];
   if (authHeader !== `Bearer ${adminToken}`) {
     return res.status(403).json({ error: 'Forbidden: invalid token' });
@@ -238,6 +244,7 @@ app.post('/create-custom-session', async (req, res) => {
       cancel_url: 'https://stay-oceanus.com/cancel.html',
     });
 
+    // ✅ GASへ転送（仮登録）
     await fetch(gasWebhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
