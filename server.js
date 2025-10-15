@@ -1,7 +1,8 @@
 /**
  * Cottage SERAGAKI - Stripe Server
- * ✅ 本番／テスト切り替え対応版
+ * ✅ 本番／テスト切り替え対応＋管理者限定テストアクセス
  */
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -30,7 +31,9 @@ const gasWebhookUrl =
     ? process.env.GAS_WEBHOOK_URL_LIVE
     : process.env.GAS_WEBHOOK_URL_TEST;
 
+// === その他環境変数 ===
 const adminToken = process.env.ADMIN_TOKEN;
+const testAccessKey = process.env.TEST_ACCESS_KEY; // ← 管理者テスト専用キー
 const port = process.env.PORT || 4242;
 
 // === Stripe初期化 ===
@@ -145,6 +148,16 @@ async function forwardEventToGas(payload) {
 
 // ✅ Checkout セッション作成
 app.post('/create-checkout-session', async (req, res) => {
+  // === テストモード時: 管理者以外をブロック ===
+  if (mode !== 'live') {
+    const accessKey = req.headers['authorization']?.replace('Bearer ', '');
+    if (accessKey !== testAccessKey) {
+      return res.status(503).json({
+        error: '現在メンテナンス中です。お支払いは一時停止しています。',
+      });
+    }
+  }
+
   try {
     const { amount, email } = req.body;
     if (!amount || isNaN(amount)) {
@@ -185,6 +198,17 @@ app.post('/create-checkout-session', async (req, res) => {
 
 // ✅ 管理者専用カスタムセッション作成
 app.post('/create-custom-session', async (req, res) => {
+  // === テストモード時: 管理者以外をブロック ===
+  if (mode !== 'live') {
+    const accessKey = req.headers['authorization']?.replace('Bearer ', '');
+    if (accessKey !== testAccessKey) {
+      return res.status(503).json({
+        error: '現在メンテナンス中です。（管理者発行は停止中）',
+      });
+    }
+  }
+
+  // ✅ 管理者認証（既存）
   const authHeader = req.headers['authorization'];
   if (authHeader !== `Bearer ${adminToken}`) {
     return res.status(403).json({ error: 'Forbidden: invalid token' });
