@@ -200,13 +200,16 @@ app.post('/create-checkout-session', async (req, res) => {
 
 // ✅ 管理者専用カスタムセッション作成
 app.post('/create-custom-session', async (req, res) => {
-  const mode = process.env.APP_MODE || 'test';
-  const adminToken = process.env.ADMIN_TOKEN;
-  const testAccessKey = process.env.TEST_ACCESS_KEY;
-  const gasWebhookUrl = process.env.GAS_WEBHOOK_URL;
+  // 🔽 以下4行は削除 or 修正
+  // const mode = process.env.APP_MODE || 'test';
+  // const adminToken = process.env.ADMIN_TOKEN;
+  // const testAccessKey = process.env.TEST_ACCESS_KEY;
+  // const gasWebhookUrl = process.env.GAS_WEBHOOK_URL;
+
+  // 🔽 上書きしないように既存の上位スコープ変数をそのまま使う
+  // （mode, adminToken, testAccessKey, gasWebhookUrl はすでに上で定義済み）
 
   // === 本番モードでも管理者なら許可 ===
-  // （テストモード時はTEST_ACCESS_KEYで制御）
   if (mode === 'test') {
     const accessKey = req.headers['authorization']?.replace('Bearer ', '');
     if (accessKey !== testAccessKey && accessKey !== adminToken) {
@@ -234,7 +237,7 @@ app.post('/create-custom-session', async (req, res) => {
           price_data: {
             currency: 'jpy',
             product_data: { name: '個別予約（管理者発行）' },
-            unit_amount: amount,
+            unit_amount: Number(amount),
           },
           quantity: 1,
         },
@@ -264,7 +267,7 @@ app.post('/create-custom-session', async (req, res) => {
 
     res.json({ url: session.url });
   } catch (error) {
-    console.error('❌ Custom session error:', error);
+    console.error('❌ Custom session error:', error.stack);
     res.status(500).json({ error: 'Session creation failed' });
   }
 });
