@@ -1,6 +1,6 @@
 /**
  * Cottage SERAGAKI - Stripe Server
- * ✅ 本番／テスト切り替え対応＋管理者限定テストアクセス
+ * ✅ 本番／テスト切り替え対応
  */
 
 require('dotenv').config();
@@ -32,8 +32,6 @@ const gasWebhookUrl =
     : process.env.GAS_WEBHOOK_URL_TEST;
 
 // === その他環境変数 ===
-const adminToken = process.env.ADMIN_TOKEN;
-const testAccessKey = process.env.TEST_ACCESS_KEY; // ← 管理者テスト専用キー
 const port = process.env.PORT || 4242;
 
 // === Stripe初期化 ===
@@ -148,16 +146,6 @@ async function forwardEventToGas(payload) {
 
 // ✅ Checkout セッション作成
 app.post('/create-checkout-session', async (req, res) => {
-  // === テストモード時: 管理者以外をブロック ===
-  if (mode !== 'live') {
-    const accessKey = req.headers['authorization']?.replace('Bearer ', '');
-    if (accessKey !== testAccessKey) {
-      return res.status(503).json({
-        error: '現在メンテナンス中です。お支払いは一時停止しています。',
-      });
-    }
-  }
-
   try {
     const { amount, email } = req.body;
     if (!amount || isNaN(amount)) {
@@ -198,36 +186,11 @@ app.post('/create-checkout-session', async (req, res) => {
   }
 });
 
-// ✅ 管理者専用カスタムセッション作成
+// ✅ カスタムセッション作成
 app.post('/create-custom-session', async (req, res) => {
-  // 🔽 以下4行は削除 or 修正
-  // const mode = process.env.APP_MODE || 'test';
-  // const adminToken = process.env.ADMIN_TOKEN;
-  // const testAccessKey = process.env.TEST_ACCESS_KEY;
-  // const gasWebhookUrl = process.env.GAS_WEBHOOK_URL;
-
-  // 🔽 上書きしないように既存の上位スコープ変数をそのまま使う
-  // （mode, adminToken, testAccessKey, gasWebhookUrl はすでに上で定義済み）
-
-  // === 本番モードでも管理者なら許可 ===
-  if (mode === 'test') {
-    const accessKey = req.headers['authorization']?.replace('Bearer ', '');
-    if (accessKey !== testAccessKey && accessKey !== adminToken) {
-      return res.status(503).json({
-        error: '現在メンテナンス中です。（管理者発行は停止中）',
-      });
-    }
-  }
-
-  // ✅ 管理者認証（必須）
-  const authHeader = req.headers['authorization'];
-  if (authHeader !== `Bearer ${adminToken}`) {
-    return res.status(403).json({ error: 'Forbidden: invalid token' });
-  }
-
   try {
     const { comment, checkin, checkout, amount, email } = req.body;
-    const metadata = { comment, checkin, checkout, createdBy: 'admin' };
+    const metadata = { comment, checkin, checkout, createdBy: 'custom' };
 
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
@@ -236,7 +199,7 @@ app.post('/create-custom-session', async (req, res) => {
         {
           price_data: {
             currency: 'jpy',
-            product_data: { name: '個別予約（管理者発行）' },
+            product_data: { name: '個別予約' },
             unit_amount: Number(amount),
           },
           quantity: 1,
@@ -260,7 +223,7 @@ app.post('/create-custom-session', async (req, res) => {
           checkout,
           amount,
           email,
-          createdBy: 'admin',
+          createdBy: 'custom',
         }),
       }),
     });
