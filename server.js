@@ -144,34 +144,44 @@ async function forwardEventToGas(payload) {
   console.log('✅ Event successfully forwarded to GAS.');
 }
 
-// ✅ Stripe審査用：支払い方法選択ページ（UI表示のみ）
+// ✅ Checkout セッション作成
 app.post('/create-checkout-session', async (req, res) => {
   try {
-    // Stripe審査用ダミー金額（実際の課金は行われません）
-    const amount = 100; // ← 100円（テスト用）
-    const email = 'test@example.com';
+    const { amount, email } = req.body;
+    if (!amount || isNaN(amount)) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
 
+    const metadata = req.body.metadata || {};
+    metadata.email = metadata.email || req.body.email || '';
+    metadata.phone = metadata.phone || req.body.tel || '';
+    metadata.total = metadata.total || req.body.amount || '';
+    metadata.detail = metadata.detail || '';
+
+    // ✅ コンビニ決済一時停止中（カードのみ）
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card', 'konbini'], // 両方表示
+      // payment_method_types: ['card', 'konbini'], // ← 元の行はコメントアウト
+      payment_method_types: ['card', 'konbini'], // ← コンビニ決済も再度有効化
       line_items: [
         {
           price_data: {
             currency: 'jpy',
-            product_data: { name: 'Cottage SERAGAKI - 審査用テスト決済' },
-            unit_amount: amount,
+            product_data: { name: '宿泊予約' },
+            unit_amount: Number(amount),
           },
           quantity: 1,
         },
       ],
       mode: 'payment',
-      customer_email: email,
+      customer_email: email || undefined,
       success_url: 'https://stay-oceanus.com/payment_success.html',
       cancel_url: 'https://stay-oceanus.com/payment_cancel.html',
+      metadata,
     });
 
     res.json({ url: session.url });
   } catch (error) {
-    console.error('Stripe審査用セッション作成エラー:', error);
+    console.error('Error creating checkout session:', error);
     res.status(500).json({ error: error.message });
   }
 });
