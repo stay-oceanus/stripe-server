@@ -173,7 +173,7 @@ app.post('/create-checkout-session', async (req, res) => {
     // ✅ コンビニ決済一時停止中（カードのみ）
     const session = await stripe.checkout.sessions.create({
       // payment_method_types: ['card', 'konbini'], // ← 元の行はコメントアウト
-      payment_method_types: ['card'], // ← コンビニ決済一時停止中
+      payment_method_types: ['card', 'konbini'], // ← コンビニ決済も再度有効化
       line_items: [
         {
           price_data: {
