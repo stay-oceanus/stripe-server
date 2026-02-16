@@ -40,6 +40,43 @@ if (!stripeSecretKey) {
 }
 const stripe = stripeLib(stripeSecretKey);
 
+// ===== 売り止め設定（JST基準） =====
+const SELL_STOP_HOUR = 12;
+const SELL_STOP_MIN  = 0;
+
+// JSTで現在時刻を取得
+function nowJST() {
+  const now = new Date();
+  return new Date(now.toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
+}
+
+function isAfterSellStop(now) {
+  const h = now.getHours();
+  const m = now.getMinutes();
+  return (h > SELL_STOP_HOUR) || (h === SELL_STOP_HOUR && m >= SELL_STOP_MIN);
+}
+
+function isTomorrowJST(checkinStr) {
+  if (!checkinStr) return false;
+
+  const now = nowJST();
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+
+  // 🔥 YYYY-MM-DD を安全に分解して生成（UTCズレ防止）
+  const [y, m, d] = checkinStr.split('-').map(Number);
+  const checkin = new Date(y, m - 1, d);
+
+  return (
+    checkin.getFullYear() === tomorrow.getFullYear() &&
+    checkin.getMonth() === tomorrow.getMonth() &&
+    checkin.getDate() === tomorrow.getDate()
+  );
+}
+
 app.use(cors());
 
 // ✅ Webhook用：rawボディ保持（署名検証のため）
@@ -148,11 +185,21 @@ async function forwardEventToGas(payload) {
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { amount, email } = req.body;
+    const metadata = req.body.metadata || {};
+    const checkin = metadata.checkin;
+
+    const now = nowJST();
+
+    // ✅ 明日チェックイン＋12:00以降はブロック
+    if (isTomorrowJST(checkin) && isAfterSellStop(now)) {
+      return res.status(400).json({
+        error: "翌日のチェックインは本日12:00以降は受付できません。"
+      });
+    }
     if (!amount || isNaN(amount)) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
-    const metadata = req.body.metadata || {};
     metadata.email = metadata.email || req.body.email || '';
     metadata.phone = metadata.phone || req.body.tel || '';
     metadata.total = metadata.total || req.body.amount || '';
