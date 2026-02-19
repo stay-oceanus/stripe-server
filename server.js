@@ -38,6 +38,8 @@ const port = process.env.PORT || 4242;
 const BEDS24_BASE_URL =
   process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
 const BEDS24_REFRESH_TOKEN = process.env.BEDS24_REFRESH_TOKEN;
+const BEDS24_PROPERTY_ID = process.env.BEDS24_PROPERTY_ID;
+const BEDS24_ROOM_ID = process.env.BEDS24_ROOM_ID;
 
 let beds24TokenCache = null;
 let beds24TokenFetchedAt = 0;
@@ -324,11 +326,46 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', mode });
 });
 
-// ✅ Beds24 接続テスト（これ1個だけ）
+// ✅ Beds24 接続テスト
 app.get('/test-beds24', async (_req, res) => {
   try {
     const token = await beds24GetAccessToken();
     res.json({ success: true, tokenPreview: token.slice(0, 12) + '...' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e.message || e) });
+  }
+});
+
+// ✅ Beds24 ブッキング取得テスト（指定期間）
+app.get('/test-beds24-bookings', async (req, res) => {
+  try {
+    const token = await beds24GetAccessToken();
+
+    if (!BEDS24_PROPERTY_ID) throw new Error('Missing BEDS24_PROPERTY_ID');
+    if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
+
+    // 期間は ?from=2026-03-01&to=2026-03-31 みたいに渡せる
+    const from = req.query.from || '2026-03-01';
+    const to   = req.query.to   || '2026-03-31';
+
+    const url = new URL(`${BEDS24_BASE_URL}/bookings`);
+    url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
+    url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
+    url.searchParams.set('from', from);
+    url.searchParams.set('to', to);
+
+    const r = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        token: token,
+      },
+    });
+
+    const text = await r.text();
+    if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
+
+    res.json(JSON.parse(text));
   } catch (e) {
     res.status(500).json({ success: false, error: String(e.message || e) });
   }
