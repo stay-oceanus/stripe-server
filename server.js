@@ -34,6 +34,45 @@ const gasWebhookUrl =
 // === その他環境変数 ===
 const port = process.env.PORT || 4242;
 
+// ===== Beds24 API V2 =====
+const BEDS24_BASE_URL =
+  process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
+const BEDS24_REFRESH_TOKEN = process.env.BEDS24_REFRESH_TOKEN;
+
+let beds24TokenCache = null;
+let beds24TokenFetchedAt = 0;
+
+async function beds24GetAccessToken() {
+  if (!BEDS24_REFRESH_TOKEN) throw new Error('Missing BEDS24_REFRESH_TOKEN');
+
+  const now = Date.now();
+  // tokenは24時間。安全側に23時間で更新
+  if (beds24TokenCache && now - beds24TokenFetchedAt < 23 * 60 * 60 * 1000) {
+    return beds24TokenCache;
+  }
+
+  const r = await fetch(`${BEDS24_BASE_URL}/authentication/token`, {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      refreshToken: BEDS24_REFRESH_TOKEN,
+    },
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Beds24 /authentication/token failed: ${r.status} ${text}`);
+  }
+
+  const json = JSON.parse(text);
+  const token = json.token;
+  if (!token) throw new Error(`Beds24 token missing: ${text}`);
+
+  beds24TokenCache = token;
+  beds24TokenFetchedAt = now;
+  return token;
+} // ← ✅ ここが抜けてたので追加（超重要）
+
 // === Stripe初期化 ===
 if (!stripeSecretKey) {
   throw new Error('Missing STRIPE_SECRET_KEY in environment variables.');
@@ -42,18 +81,18 @@ const stripe = stripeLib(stripeSecretKey);
 
 // ===== 売り止め設定（JST基準） =====
 const SELL_STOP_HOUR = 12;
-const SELL_STOP_MIN  = 0;
+const SELL_STOP_MIN = 0;
 
 // JSTで現在時刻を取得
 function nowJST() {
   const now = new Date();
-  return new Date(now.toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
+  return new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
 }
 
 function isAfterSellStop(now) {
   const h = now.getHours();
   const m = now.getMinutes();
-  return (h > SELL_STOP_HOUR) || (h === SELL_STOP_HOUR && m >= SELL_STOP_MIN);
+  return h > SELL_STOP_HOUR || (h === SELL_STOP_HOUR && m >= SELL_STOP_MIN);
 }
 
 function isTomorrowJST(checkinStr) {
@@ -91,7 +130,6 @@ app.post(
       if (!webhookSecret) {
         throw new Error('STRIPE_WEBHOOK_SECRET is not configured.');
       }
-
       event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
     } catch (err) {
       console.error('❌ Webhook signature verification failed:', err.message);
@@ -105,7 +143,7 @@ app.post(
         let paymentMethod = 'card';
         let status = '支払い完了';
 
-        if (session.payment_method_types.includes('konbini')) {
+        if (session.payment_method_types?.includes('konbini')) {
           paymentMethod = 'konbini';
           status = '支払い待ち';
         }
@@ -193,9 +231,10 @@ app.post('/create-checkout-session', async (req, res) => {
     // ✅ 明日チェックイン＋12:00以降はブロック
     if (isTomorrowJST(checkin) && isAfterSellStop(now)) {
       return res.status(400).json({
-        error: "翌日のチェックインは本日12:00以降は受付できません。"
+        error: '翌日のチェックインは本日12:00以降は受付できません。',
       });
     }
+
     if (!amount || isNaN(amount)) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
@@ -205,7 +244,6 @@ app.post('/create-checkout-session', async (req, res) => {
     metadata.total = metadata.total || req.body.amount || '';
     metadata.detail = metadata.detail || '';
 
-    // ✅ コンビニ決済一時停止中（カードのみ）
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card', 'konbini'],
       line_items: [
@@ -286,20 +324,13 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', mode });
 });
 
-// ✅ Beds24 接続テスト
-app.get('/test-beds24', async (req, res) => {
+// ✅ Beds24 接続テスト（これ1個だけ）
+app.get('/test-beds24', async (_req, res) => {
   try {
     const token = await beds24GetAccessToken();
-    res.json({
-      success: true,
-      message: "Beds24 connected",
-      tokenPreview: token.substring(0, 10) + "..."
-    });
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    res.json({ success: true, tokenPreview: token.slice(0, 12) + '...' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e.message || e) });
   }
 });
 
