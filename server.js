@@ -286,6 +286,23 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', mode });
 });
 
+// ✅ Beds24 接続テスト
+app.get('/test-beds24', async (req, res) => {
+  try {
+    const token = await beds24GetAccessToken();
+    res.json({
+      success: true,
+      message: "Beds24 connected",
+      tokenPreview: token.substring(0, 10) + "..."
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 // ✅ サーバー起動
 app.listen(port, () => {
   console.log(`🌐 Server listening on port ${port}`);
