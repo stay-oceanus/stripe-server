@@ -118,6 +118,19 @@ function isTomorrowJST(checkinStr) {
   );
 }
 
+function isAtLeast48HoursBeforeCheckinJST(checkinStr) {
+  if (!checkinStr) return false;
+
+  const now = nowJST();
+
+  // チェックインは15:00基準（JST）
+  const [y, m, d] = checkinStr.split('-').map(Number);
+  const checkin = new Date(y, m - 1, d, 15, 0, 0); // JSTローカル扱い
+
+  const diffMs = checkin.getTime() - now.getTime();
+  return diffMs >= 48 * 60 * 60 * 1000;
+}
+
 app.use(cors());
 
 // ✅ Webhook用：rawボディ保持（署名検証のため）
@@ -142,14 +155,21 @@ app.post(
       // イベントタイプ別処理
       if (event.type === 'checkout.session.completed') {
         const session = event.data.object;
-        let paymentMethod = 'card';
+      
+        const pmTypes = session.payment_method_types || [];
+        let paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
+      
+        // ✅ ステータス（GASにこのまま渡して整合性を作る）
+        // konbini: unpaidなら支払い待ち
+        // card: manual captureだと paid にならないので 仮予約
         let status = '支払い完了';
-
-        if (session.payment_method_types?.includes('konbini')) {
-          paymentMethod = 'konbini';
-          status = '支払い待ち';
+      
+        if (paymentMethod === 'konbini') {
+          status = session.payment_status === 'paid' ? '支払い完了' : '支払い待ち';
+        } else {
+          status = session.payment_status === 'paid' ? '支払い完了' : '仮予約';
         }
-
+      
         const payload = {
           type: event.type,
           data: { object: session },
@@ -159,17 +179,22 @@ app.post(
         await forwardEventToGas(payload);
       } else if (event.type === 'payment_intent.succeeded') {
         const paymentIntent = event.data.object;
+      
         const sessions = await stripe.checkout.sessions.list({
           payment_intent: paymentIntent.id,
           limit: 1,
         });
+      
         const session = sessions.data[0];
         if (session) {
+          const pmTypes = session.payment_method_types || [];
+          const paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
+      
           const payload = {
             type: 'payment_intent.succeeded',
             data: { object: session },
             payment_status: '支払い完了',
-            payment_method: 'konbini',
+            payment_method: paymentMethod,
           };
           await forwardEventToGas(payload);
         }
@@ -225,6 +250,11 @@ async function forwardEventToGas(payload) {
 app.post('/create-checkout-session', async (req, res) => {
   try {
     const { amount, email } = req.body;
+
+    // ✅ payMethod（confirmから来る）
+    const payMethod = (req.body.payMethod || 'card').toString(); // 'card' or 'konbini'
+
+    // ✅ metadata（metadata[xxx] を express が metadata オブジェクトにしてくれる）
     const metadata = req.body.metadata || {};
     const checkin = metadata.checkin;
 
@@ -241,13 +271,31 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Invalid amount' });
     }
 
+    // ✅ GAS整合性のため：サーバで確実にmetadataへ格納
     metadata.email = metadata.email || req.body.email || '';
-    metadata.phone = metadata.phone || req.body.tel || '';
+    metadata.phone = metadata.phone || req.body.phone || req.body.tel || '';
     metadata.total = metadata.total || req.body.amount || '';
     metadata.detail = metadata.detail || '';
+    metadata.payMethod = metadata.payMethod || payMethod; // ← 追加（重要）
+
+    // ✅ 支払い方法を絞る
+    let payment_method_types;
+    if (payMethod === 'konbini') payment_method_types = ['konbini'];
+    else if (payMethod === 'card') payment_method_types = ['card'];
+    else payment_method_types = ['card', 'konbini']; // 保険
+
+    // ✅ 「カード×チェックインまで48時間以上」＝オーソリ運用（manual capture）
+    const shouldManualCapture =
+      payment_method_types.includes('card') && isAtLeast48HoursBeforeCheckinJST(checkin);
 
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card', 'konbini'],
+      payment_method_types,
+
+      // manual capture を使う場合だけ payment_intent_data を付ける
+      ...(shouldManualCapture
+        ? { payment_intent_data: { capture_method: 'manual' } }
+        : {}),
+
       line_items: [
         {
           price_data: {
