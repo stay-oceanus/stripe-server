@@ -7,6 +7,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const stripeLib = require('stripe');
+const crypto = require('crypto');
 
 const app = express();
 
@@ -35,8 +36,7 @@ const gasWebhookUrl =
 const port = process.env.PORT || 4242;
 
 // ===== Beds24 API V2 =====
-const BEDS24_BASE_URL =
-  process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
+const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
 const BEDS24_REFRESH_TOKEN = process.env.BEDS24_REFRESH_TOKEN;
 const BEDS24_PROPERTY_ID = process.env.BEDS24_PROPERTY_ID;
 const BEDS24_ROOM_ID = process.env.BEDS24_ROOM_ID;
@@ -73,7 +73,7 @@ async function beds24GetAccessToken() {
   beds24TokenCache = token;
   beds24TokenFetchedAt = now;
   return token;
-} // ← ✅ ここが抜けてたので追加（超重要）
+}
 
 // === Stripe初期化 ===
 if (!stripeSecretKey) {
@@ -134,91 +134,88 @@ function isAtLeast48HoursBeforeCheckinJST(checkinStr) {
 app.use(cors());
 
 // ✅ Webhook用：rawボディ保持（署名検証のため）
-app.post(
-  '/webhook',
-  express.raw({ type: 'application/json' }),
-  async (req, res) => {
-    const signature = req.headers['stripe-signature'];
-    let event;
+app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const signature = req.headers['stripe-signature'];
+  let event;
 
-    try {
-      if (!webhookSecret) {
-        throw new Error('STRIPE_WEBHOOK_SECRET is not configured.');
-      }
-      event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
-    } catch (err) {
-      console.error('❌ Webhook signature verification failed:', err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
+  try {
+    if (!webhookSecret) {
+      throw new Error('STRIPE_WEBHOOK_SECRET is not configured.');
     }
+    event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
+  } catch (err) {
+    console.error('❌ Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
 
-    try {
-      // イベントタイプ別処理
-      if (event.type === 'checkout.session.completed') {
-        const session = event.data.object;
-      
+  try {
+    // イベントタイプ別処理
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+
+      const pmTypes = session.payment_method_types || [];
+      const paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
+
+      // ✅ ステータス（GASにこのまま渡して整合性を作る）
+      // konbini: unpaidなら支払い待ち
+      // card: manual captureだと paid にならないので 仮予約
+      let status = '支払い完了';
+
+      if (paymentMethod === 'konbini') {
+        status = session.payment_status === 'paid' ? '支払い完了' : '支払い待ち';
+      } else {
+        status = session.payment_status === 'paid' ? '支払い完了' : '仮予約';
+      }
+
+      const payload = {
+        type: event.type,
+        data: { object: session },
+        payment_status: status,
+        payment_method: paymentMethod,
+      };
+
+      await forwardEventToGas(payload);
+    } else if (event.type === 'payment_intent.succeeded') {
+      const paymentIntent = event.data.object;
+
+      const sessions = await stripe.checkout.sessions.list({
+        payment_intent: paymentIntent.id,
+        limit: 1,
+      });
+
+      const session = sessions.data[0];
+      if (session) {
         const pmTypes = session.payment_method_types || [];
-        let paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
-      
-        // ✅ ステータス（GASにこのまま渡して整合性を作る）
-        // konbini: unpaidなら支払い待ち
-        // card: manual captureだと paid にならないので 仮予約
-        let status = '支払い完了';
-      
-        if (paymentMethod === 'konbini') {
-          status = session.payment_status === 'paid' ? '支払い完了' : '支払い待ち';
-        } else {
-          status = session.payment_status === 'paid' ? '支払い完了' : '仮予約';
-        }
-      
+        const paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
+
         const payload = {
-          type: event.type,
+          type: 'payment_intent.succeeded',
           data: { object: session },
-          payment_status: status,
+          payment_status: '支払い完了',
           payment_method: paymentMethod,
         };
         await forwardEventToGas(payload);
-      } else if (event.type === 'payment_intent.succeeded') {
-        const paymentIntent = event.data.object;
-      
-        const sessions = await stripe.checkout.sessions.list({
-          payment_intent: paymentIntent.id,
-          limit: 1,
-        });
-      
-        const session = sessions.data[0];
-        if (session) {
-          const pmTypes = session.payment_method_types || [];
-          const paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
-      
-          const payload = {
-            type: 'payment_intent.succeeded',
-            data: { object: session },
-            payment_status: '支払い完了',
-            payment_method: paymentMethod,
-          };
-          await forwardEventToGas(payload);
-        }
-      } else if (event.type === 'payment_intent.canceled') {
-        const paymentIntent = event.data.object;
-        const customerEmail =
-          paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
-        const payload = {
-          type: 'payment_intent.canceled',
-          email: customerEmail,
-          payment_intent: paymentIntent.id,
-          payment_status: 'キャンセル',
-          payment_method: 'konbini',
-        };
-        await forwardEventToGas(payload);
       }
+    } else if (event.type === 'payment_intent.canceled') {
+      const paymentIntent = event.data.object;
+      const customerEmail = paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
 
-      res.json({ received: true });
-    } catch (err) {
-      console.error('Failed to forward event to GAS:', err.message);
-      res.status(500).send(`Forward Error: ${err.message}`);
+      const payload = {
+        type: 'payment_intent.canceled',
+        email: customerEmail,
+        payment_intent: paymentIntent.id,
+        payment_status: 'キャンセル',
+        payment_method: 'konbini',
+      };
+      await forwardEventToGas(payload);
     }
+
+    return res.json({ received: true });
+  } catch (err) {
+    console.error('Failed to forward event to GAS:', err.message);
+    return res.status(500).send(`Forward Error: ${err.message}`);
   }
-);
+});
 
 // ✅ 他のルートは通常JSONパーサー
 app.use(express.urlencoded({ extended: true }));
@@ -245,6 +242,98 @@ async function forwardEventToGas(payload) {
 
   console.log('✅ Event successfully forwarded to GAS.');
 }
+
+// ✅ キャンセルリンク（manual capture の仮予約だけ即キャンセル）
+app.get('/cancel', async (req, res) => {
+  try {
+    const sessionId = String(req.query.session_id || '');
+    const token = String(req.query.token || '');
+
+    if (!sessionId || !token) {
+      return res
+        .status(400)
+        .send('キャンセルURLが不正です（必要な情報が不足しています）。');
+    }
+
+    // 1) Checkout Session を取得（metadata確認のため）
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (!session) {
+      return res.status(404).send('予約情報が見つかりませんでした。');
+    }
+
+    const md = session.metadata || {};
+    const captureMethod = md.captureMethod || '';
+    const cancelToken = md.cancelToken || '';
+    const cancelUntil = md.cancelUntil || '';
+
+    // ✅ manual capture 以外は不可
+    if (captureMethod !== 'manual') {
+      return res.status(403).send('この予約はキャンセルリンク対象ではありません。');
+    }
+
+    // ✅ token が一致しないと不可（簡易照合）
+    if (!cancelToken || token !== cancelToken) {
+      return res.status(403).send('キャンセルトークンが一致しません。');
+    }
+
+    // ✅ 期限チェック（cancelUntilEpoch を優先）
+    const cancelUntilEpoch = md.cancelUntilEpoch ? Number(md.cancelUntilEpoch) : NaN;
+
+    if (Number.isFinite(cancelUntilEpoch)) {
+      if (Date.now() > cancelUntilEpoch) {
+        return res.status(410).send('キャンセル可能期限を過ぎています。');
+      }
+    } else if (cancelUntil) {
+      // 互換：昔の実装で cancelUntil だけ入ってる場合
+      const untilMs = new Date(cancelUntil).getTime();
+      if (!Number.isFinite(untilMs) || Date.now() > untilMs) {
+        return res.status(410).send('キャンセル可能期限を過ぎています。');
+      }
+    }
+
+    // 2) PaymentIntent をキャンセル
+    const piId = session.payment_intent;
+    if (!piId) {
+      return res.status(400).send('決済情報（PaymentIntent）が見つかりませんでした。');
+    }
+
+    // ✅ 既に支払い完了（captured）になってる場合はここで止める
+    // manual capture 運用なら、ここは通常 "requires_capture" のはず
+    const pi = await stripe.paymentIntents.retrieve(piId);
+    if (pi.status === 'succeeded') {
+      return res.status(409).send('この予約は既に確定（支払い完了）しているためキャンセルできません。');
+    }
+    if (pi.status === 'canceled') {
+      return res
+        .status(200)
+        .send('この予約はすでにキャンセル済みです。');
+    }
+
+    const canceled = await stripe.paymentIntents.cancel(piId);
+
+    // 3) GASへ通知（シートのステータス更新用）
+    // ※ doPost 側で data.type を見て処理する想定。未実装なら次ステップで追加する。
+    await forwardEventToGas({
+      type: 'manual_capture_canceled',
+      data: { object: session },
+      payment_status: 'キャンセル',
+      payment_method: 'card',
+      payment_intent: piId,
+      cancel_reason: canceled.cancellation_reason || '',
+    });
+
+    // 4) ユーザー向け表示
+    return res
+      .status(200)
+      .send('キャンセルが完了しました。ご利用ありがとうございました。');
+  } catch (e) {
+    console.error('❌ Cancel route error:', e);
+    return res
+      .status(500)
+      .send('キャンセル処理に失敗しました。お手数ですがご連絡ください。');
+  }
+});
 
 // ✅ Checkout セッション作成
 app.post('/create-checkout-session', async (req, res) => {
@@ -276,7 +365,7 @@ app.post('/create-checkout-session', async (req, res) => {
     metadata.phone = metadata.phone || req.body.phone || req.body.tel || '';
     metadata.total = metadata.total || req.body.amount || '';
     metadata.detail = metadata.detail || '';
-    metadata.payMethod = metadata.payMethod || payMethod; // ← 追加（重要）
+    metadata.payMethod = metadata.payMethod || payMethod;
 
     // ✅ 支払い方法を絞る
     let payment_method_types;
@@ -288,13 +377,40 @@ app.post('/create-checkout-session', async (req, res) => {
     const shouldManualCapture =
       payment_method_types.includes('card') && isAtLeast48HoursBeforeCheckinJST(checkin);
 
+    // ✅ manual capture のときだけ「キャンセル用トークン」と「期限」を metadata に付与
+    if (shouldManualCapture) {
+      const cancelToken = crypto.randomBytes(16).toString('hex'); // 32文字
+
+      // 48時間後（ms）
+      const cancelUntilEpoch = Date.now() + 48 * 60 * 60 * 1000;
+
+      // GASメールにそのまま出したいので JST文字列も用意
+      const cancelUntilJstText = new Date(cancelUntilEpoch).toLocaleString('ja-JP', {
+        timeZone: 'Asia/Tokyo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      metadata.cancelToken = cancelToken;
+      metadata.cancelUntil = cancelUntilJstText;          // ✅ GAS表示用（文字列）
+      metadata.cancelUntilEpoch = String(cancelUntilEpoch); // ✅ サーバ判定用（文字列でOK）
+      metadata.captureMethod = 'manual';
+    } else {
+      // manual capture じゃない場合はキャンセルリンク対象外
+      delete metadata.cancelToken;
+      delete metadata.cancelUntil;
+      delete metadata.cancelUntilEpoch;
+      metadata.captureMethod = 'automatic';
+    }
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types,
 
       // manual capture を使う場合だけ payment_intent_data を付ける
-      ...(shouldManualCapture
-        ? { payment_intent_data: { capture_method: 'manual' } }
-        : {}),
+      ...(shouldManualCapture ? { payment_intent_data: { capture_method: 'manual' } } : {}),
 
       line_items: [
         {
@@ -313,10 +429,10 @@ app.post('/create-checkout-session', async (req, res) => {
       metadata,
     });
 
-    res.json({ url: session.url });
+    return res.json({ url: session.url });
   } catch (error) {
     console.error('Error creating checkout session:', error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 });
 
@@ -362,10 +478,10 @@ app.post('/create-custom-session', async (req, res) => {
       }),
     });
 
-    res.json({ url: session.url });
+    return res.json({ url: session.url });
   } catch (error) {
     console.error('❌ Custom session error:', error.stack);
-    res.status(500).json({ error: 'Session creation failed' });
+    return res.status(500).json({ error: 'Session creation failed' });
   }
 });
 
@@ -394,7 +510,7 @@ app.get('/test-beds24-bookings', async (req, res) => {
 
     // 期間は ?from=2026-03-01&to=2026-03-31 みたいに渡せる
     const from = req.query.from || '2026-03-01';
-    const to   = req.query.to   || '2026-03-31';
+    const to = req.query.to || '2026-03-31';
 
     const url = new URL(`${BEDS24_BASE_URL}/bookings`);
     url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
@@ -413,9 +529,9 @@ app.get('/test-beds24-bookings', async (req, res) => {
     const text = await r.text();
     if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
 
-    res.json(JSON.parse(text));
+    return res.json(JSON.parse(text));
   } catch (e) {
-    res.status(500).json({ success: false, error: String(e.message || e) });
+    return res.status(500).json({ success: false, error: String(e.message || e) });
   }
 });
 
