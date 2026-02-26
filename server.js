@@ -221,6 +221,90 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json({ limit: '1mb' }));
 
+// ===== Beds24 Booking Webhook 受信 =====
+const BEDS24_WEBHOOK_TOKEN = process.env.BEDS24_WEBHOOK_TOKEN || '';
+
+// Beds24 API: bookingId で詳細を取る（取れない場合は期間で拾う）
+async function beds24GetBookingDetail({ bookingId, from, to }) {
+  const token = await beds24GetAccessToken();
+
+  const url = new URL(`${BEDS24_BASE_URL}/bookings`);
+
+  // property/room はあなたの設計通り固定でもOK（1棟なら特に）
+  if (BEDS24_PROPERTY_ID) url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
+  if (BEDS24_ROOM_ID) url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
+
+  // まず bookingId が取れるならそれ優先（最小取得）
+  if (bookingId) url.searchParams.set('bookingId', String(bookingId));
+
+  // bookingId が無い/効かない時の保険：from/to
+  if (from) url.searchParams.set('from', String(from));
+  if (to) url.searchParams.set('to', String(to));
+
+  const r = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { accept: 'application/json', token }
+  });
+
+  const text = await r.text();
+  if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
+  return JSON.parse(text);
+}
+
+app.post('/beds24/webhook/booking', async (req, res) => {
+  try {
+    // 1) 超簡易認証（URLトークン）
+    const token = String(req.query.token || '');
+    if (BEDS24_WEBHOOK_TOKEN && token !== BEDS24_WEBHOOK_TOKEN) {
+      return res.status(403).send('Forbidden');
+    }
+
+    // 2) 受信ボディ（Beds24の実際の形に依存するので、まずログ）
+    const body = req.body || {};
+    console.log('📩 Beds24 webhook received:', JSON.stringify(body).slice(0, 2000));
+
+    // 3) bookingId をできるだけ拾う（形が違っても耐える）
+    const bookingId =
+      body.bookingId ||
+      body.bookingID ||
+      body.id ||
+      (Array.isArray(body.bookingIds) ? body.bookingIds[0] : null) ||
+      (body.booking ? (body.booking.bookingId || body.booking.id) : null) ||
+      null;
+
+    // 4) bookingId で詳細取得（ダメなら期間で保険取得）
+    //    from/to は webhook に入ってないこともあるので、保険で「今日±120日」でも可
+    let detail;
+    try {
+      detail = await beds24GetBookingDetail({ bookingId });
+    } catch (e) {
+      const today = new Date();
+      const from = new Date(today); from.setDate(from.getDate() - 3);
+      const to = new Date(today); to.setDate(to.getDate() + 365);
+
+      const fmt = (d) =>
+        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+      detail = await beds24GetBookingDetail({ from: fmt(from), to: fmt(to) });
+    }
+
+    // 5) GASへ転送（あなたの既存 forwardEventToGas を流用）
+    await forwardEventToGas({
+      type: 'beds24_booking_webhook',
+      beds24: {
+        bookingId: bookingId || '',
+        raw: body,
+        detail
+      }
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('❌ Beds24 webhook error:', e);
+    return res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+});
+
 // ✅ GAS転送関数
 async function forwardEventToGas(payload) {
   if (!gasWebhookUrl) {
@@ -243,77 +327,139 @@ async function forwardEventToGas(payload) {
   console.log('✅ Event successfully forwarded to GAS.');
 }
 
-// ✅ キャンセルリンク（manual capture の仮予約だけ即キャンセル）
+// ✅ キャンセル確認画面（ここではまだキャンセルしない）
 app.get('/cancel', async (req, res) => {
   try {
     const sessionId = String(req.query.session_id || '');
     const token = String(req.query.token || '');
 
     if (!sessionId || !token) {
-      return res
-        .status(400)
-        .send('キャンセルURLが不正です（必要な情報が不足しています）。');
+      return res.status(400).send('キャンセルURLが不正です（必要な情報が不足しています）。');
     }
 
-    // 1) Checkout Session を取得（metadata確認のため）
+    // 1) Checkout Session を取得（metadata確認）
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    if (!session) {
-      return res.status(404).send('予約情報が見つかりませんでした。');
-    }
+    if (!session) return res.status(404).send('予約情報が見つかりませんでした。');
 
     const md = session.metadata || {};
     const captureMethod = md.captureMethod || '';
     const cancelToken = md.cancelToken || '';
-    const cancelUntil = md.cancelUntil || '';
 
     // ✅ manual capture 以外は不可
     if (captureMethod !== 'manual') {
       return res.status(403).send('この予約はキャンセルリンク対象ではありません。');
     }
 
-    // ✅ token が一致しないと不可（簡易照合）
+    // ✅ token照合
     if (!cancelToken || token !== cancelToken) {
       return res.status(403).send('キャンセルトークンが一致しません。');
     }
 
-    // ✅ 期限チェック（cancelUntilEpoch を優先）
+    // ✅ 期限チェック（cancelUntilEpoch 優先）
     const cancelUntilEpoch = md.cancelUntilEpoch ? Number(md.cancelUntilEpoch) : NaN;
+    const cancelUntilText = md.cancelUntil || '';
 
-    if (Number.isFinite(cancelUntilEpoch)) {
-      if (Date.now() > cancelUntilEpoch) {
-        return res.status(410).send('キャンセル可能期限を過ぎています。');
-      }
-    } else if (cancelUntil) {
-      // 互換：昔の実装で cancelUntil だけ入ってる場合
-      const untilMs = new Date(cancelUntil).getTime();
-      if (!Number.isFinite(untilMs) || Date.now() > untilMs) {
-        return res.status(410).send('キャンセル可能期限を過ぎています。');
-      }
+    if (Number.isFinite(cancelUntilEpoch) && Date.now() > cancelUntilEpoch) {
+      return res.status(410).send('キャンセル可能期限を過ぎています。');
     }
 
-    // 2) PaymentIntent をキャンセル
+    // ✅ すでに確定/キャンセル済みの場合のガード
     const piId = session.payment_intent;
-    if (!piId) {
-      return res.status(400).send('決済情報（PaymentIntent）が見つかりませんでした。');
-    }
+    if (!piId) return res.status(400).send('決済情報（PaymentIntent）が見つかりませんでした。');
 
-    // ✅ 既に支払い完了（captured）になってる場合はここで止める
-    // manual capture 運用なら、ここは通常 "requires_capture" のはず
     const pi = await stripe.paymentIntents.retrieve(piId);
     if (pi.status === 'succeeded') {
       return res.status(409).send('この予約は既に確定（支払い完了）しているためキャンセルできません。');
     }
     if (pi.status === 'canceled') {
-      return res
-        .status(200)
-        .send('この予約はすでにキャンセル済みです。');
+      return res.status(200).send('この予約はすでにキャンセル済みです。');
+    }
+
+    // 予約内容（表示用）
+    const checkin = md.checkin || '';
+    const checkout = md.checkout || '';
+
+    // ✅ 確認ページ（POSTで確定）
+    return res.status(200).send(`
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>キャンセル確認</title>
+        </head>
+        <body style="font-family: sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px;">
+          <h2>キャンセル確認</h2>
+          <p>以下の仮予約をキャンセルします。よろしいですか？</p>
+
+          <ul>
+            <li>チェックイン：${checkin}</li>
+            <li>チェックアウト：${checkout}</li>
+            ${cancelUntilText ? `<li>キャンセル期限：${cancelUntilText}</li>` : ``}
+          </ul>
+
+          <form method="POST" action="/cancel/confirm">
+            <input type="hidden" name="session_id" value="${sessionId.replace(/"/g, '&quot;')}" />
+            <input type="hidden" name="token" value="${token.replace(/"/g, '&quot;')}" />
+            <button type="submit" style="padding: 12px 16px; font-size: 16px;">
+              この予約をキャンセルする
+            </button>
+          </form>
+
+          <p style="margin-top: 18px; color:#666;">
+            ※ボタンを押すとキャンセル処理が実行されます。
+          </p>
+        </body>
+      </html>
+    `);
+  } catch (e) {
+    console.error('❌ Cancel confirm page error:', e);
+    return res.status(500).send('キャンセル画面の表示に失敗しました。');
+  }
+});
+
+// ✅ キャンセル実行（ここで初めてStripe cancel）
+app.post('/cancel/confirm', async (req, res) => {
+  try {
+    const sessionId = String(req.body.session_id || '');
+    const token = String(req.body.token || '');
+
+    if (!sessionId || !token) {
+      return res.status(400).send('必要な情報が不足しています。');
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    if (!session) return res.status(404).send('予約情報が見つかりませんでした。');
+
+    const md = session.metadata || {};
+    if (md.captureMethod !== 'manual') {
+      return res.status(403).send('この予約はキャンセルリンク対象ではありません。');
+    }
+    if (!md.cancelToken || token !== md.cancelToken) {
+      return res.status(403).send('キャンセルトークンが一致しません。');
+    }
+
+    // ✅ 期限チェック（epoch優先）
+    const cancelUntilEpoch = md.cancelUntilEpoch ? Number(md.cancelUntilEpoch) : NaN;
+    if (Number.isFinite(cancelUntilEpoch) && Date.now() > cancelUntilEpoch) {
+      return res.status(410).send('キャンセル可能期限を過ぎています。');
+    }
+
+    const piId = session.payment_intent;
+    if (!piId) {
+      return res.status(400).send('決済情報（PaymentIntent）が見つかりませんでした。');
+    }
+
+    const pi = await stripe.paymentIntents.retrieve(piId);
+    if (pi.status === 'succeeded') {
+      return res.status(409).send('この予約は既に確定（支払い完了）しているためキャンセルできません。');
+    }
+    if (pi.status === 'canceled') {
+      return res.status(200).send('この予約はすでにキャンセル済みです。');
     }
 
     const canceled = await stripe.paymentIntents.cancel(piId);
 
-    // 3) GASへ通知（シートのステータス更新用）
-    // ※ doPost 側で data.type を見て処理する想定。未実装なら次ステップで追加する。
+    // ✅ GASへ通知（シート更新など）
     await forwardEventToGas({
       type: 'manual_capture_canceled',
       data: { object: session },
@@ -323,15 +469,10 @@ app.get('/cancel', async (req, res) => {
       cancel_reason: canceled.cancellation_reason || '',
     });
 
-    // 4) ユーザー向け表示
-    return res
-      .status(200)
-      .send('キャンセルが完了しました。ご利用ありがとうございました。');
+    return res.status(200).send('キャンセルが完了しました。ご利用ありがとうございました。');
   } catch (e) {
-    console.error('❌ Cancel route error:', e);
-    return res
-      .status(500)
-      .send('キャンセル処理に失敗しました。お手数ですがご連絡ください。');
+    console.error('❌ Cancel execute error:', e);
+    return res.status(500).send('キャンセル処理に失敗しました。お手数ですがご連絡ください。');
   }
 });
 
