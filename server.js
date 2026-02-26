@@ -224,6 +224,18 @@ app.use(express.json({ limit: '1mb' }));
 // ===== Beds24 Booking Webhook 受信 =====
 const BEDS24_WEBHOOK_TOKEN = process.env.BEDS24_WEBHOOK_TOKEN || '';
 
+// ✅ Beds24 webhook 疎通チェック（ブラウザ用GET）
+app.get('/beds24/webhook/booking', (req, res) => {
+  const token = String(req.query.token || '');
+  if (!BEDS24_WEBHOOK_TOKEN) {
+    return res.status(500).send('BEDS24_WEBHOOK_TOKEN missing');
+  }
+  if (token !== BEDS24_WEBHOOK_TOKEN) {
+    return res.status(403).send('Forbidden (token mismatch)');
+  }
+  return res.status(200).send('OK (token verified)');
+});
+
 // Beds24 API: bookingId で詳細を取る（取れない場合は期間で拾う）
 async function beds24GetBookingDetail({ bookingId, from, to }) {
   const token = await beds24GetAccessToken();
