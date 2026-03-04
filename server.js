@@ -736,7 +736,9 @@ app.get('/test-beds24-block', async (req, res) => {
     if (!apiToken) throw new Error(`Beds24 token missing: ${tokenText}`);
 
     // 2) inventory POST
-    const payload = [{ propertyId, roomId, date, closed: true }];
+    const payload = [
+      { propertyId, roomId, date, closed: 1 }, // ✅ true/false じゃなく 0/1
+    ];
 
     const invResp = await fetch(`${baseUrl}/inventory`, {
       method: 'POST',
