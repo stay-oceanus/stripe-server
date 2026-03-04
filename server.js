@@ -694,15 +694,15 @@ app.listen(port, () => {
 });
 
 // ✅ テスト用：1日だけ売止め（closed）を入れる
-app.get('/test-beds24-block', async (_req, res) => {
+app.get('/test-beds24-block', async (req, res) => {
   try {
-    const baseUrl = process.env.BEDS24_BASE_URL || 'https://beds24.com/api/v2';
-    const propertyId = Number(process.env.BEDS24_PROPERTY_ID);
-    const roomId = Number(process.env.BEDS24_ROOM_ID);
-    const refreshToken = process.env.BEDS24_REFRESH_TOKEN;
+    // ✅ ここを統一（baseUrl を新規定義しない）
+    const baseUrl = BEDS24_BASE_URL;
+    const propertyId = Number(BEDS24_PROPERTY_ID);
+    const roomId = Number(BEDS24_ROOM_ID);
 
-    if (!propertyId || !roomId) throw new Error('Missing propertyId/roomId');
-    if (!refreshToken) throw new Error('Missing refreshToken');
+    if (!BEDS24_REFRESH_TOKEN) throw new Error('Missing BEDS24_REFRESH_TOKEN');
+    if (!propertyId || !roomId) throw new Error('Missing BEDS24_PROPERTY_ID or BEDS24_ROOM_ID');
 
     // ✅ 未来日の1日（今日+30日）
     const d = new Date();
@@ -717,7 +717,7 @@ app.get('/test-beds24-block', async (_req, res) => {
       method: 'GET',
       headers: {
         accept: 'application/json',
-        refreshToken: refreshToken,
+        refreshToken: BEDS24_REFRESH_TOKEN,
       },
     });
 
@@ -733,26 +733,12 @@ app.get('/test-beds24-block', async (_req, res) => {
 
     const tokenJson = JSON.parse(tokenText);
     const apiToken = tokenJson.token;
-    if (!apiToken) throw new Error(`token missing: ${tokenText}`);
+    if (!apiToken) throw new Error(`Beds24 token missing: ${tokenText}`);
 
-    // 2) ✅ 正しい在庫APIへ：POST /inventory/rooms/calendar
-    //    Body は docs の例に合わせて data/calendar 形式にする
-    const payload = {
-      data: [
-        {
-          propertyId,
-          roomId,
-          calendar: [
-            {
-              date,
-              closed: true, // 売止め
-            },
-          ],
-        },
-      ],
-    };
+    // 2) inventory POST
+    const payload = [{ propertyId, roomId, date, closed: true }];
 
-    const invResp = await fetch(`${baseUrl}/inventory/rooms/calendar`, {
+    const invResp = await fetch(`${baseUrl}/inventory`, {
       method: 'POST',
       headers: {
         accept: 'application/json',
@@ -764,7 +750,6 @@ app.get('/test-beds24-block', async (_req, res) => {
 
     const invText = await invResp.text();
 
-    // 返り値は配列になることが多い（success/errors など）
     return res.status(invResp.ok ? 200 : 500).json({
       success: invResp.ok,
       step: 'inventory_post',
@@ -775,6 +760,7 @@ app.get('/test-beds24-block', async (_req, res) => {
       invText,
     });
   } catch (e) {
+    console.error('❌ test-beds24-block error:', e);
     return res.status(500).json({ success: false, error: String(e.message || e) });
   }
 });
