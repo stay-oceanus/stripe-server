@@ -36,7 +36,7 @@ const gasWebhookUrl =
 const port = process.env.PORT || 4242;
 
 // ===== Beds24 API V2 =====
-const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://beds24.com/api/v2';
+const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
 const BEDS24_REFRESH_TOKEN = process.env.BEDS24_REFRESH_TOKEN;
 const BEDS24_PROPERTY_ID = process.env.BEDS24_PROPERTY_ID;
 const BEDS24_ROOM_ID = process.env.BEDS24_ROOM_ID;
@@ -696,7 +696,7 @@ app.listen(port, () => {
 // ✅ テスト用
 app.get('/test-beds24-block', async (req, res) => {
   try {
-    const baseUrl = process.env.BEDS24_BASE_URL || 'https://beds24.com/api/v2';
+    const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
     const propertyId = Number(process.env.BEDS24_PROPERTY_ID);
     const roomId = Number(process.env.BEDS24_ROOM_ID);
 
