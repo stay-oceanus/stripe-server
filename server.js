@@ -36,7 +36,7 @@ const gasWebhookUrl =
 const port = process.env.PORT || 4242;
 
 // ===== Beds24 API V2 =====
-const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
+const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://beds24.com/api/v2';
 const BEDS24_REFRESH_TOKEN = process.env.BEDS24_REFRESH_TOKEN;
 const BEDS24_PROPERTY_ID = process.env.BEDS24_PROPERTY_ID;
 const BEDS24_ROOM_ID = process.env.BEDS24_ROOM_ID;
@@ -691,4 +691,69 @@ app.get('/test-beds24-bookings', async (req, res) => {
 // ✅ サーバー起動
 app.listen(port, () => {
   console.log(`🌐 Server listening on port ${port}`);
+});
+
+// ✅ テスト用
+app.get('/test-beds24-block', async (req, res) => {
+  try {
+    const baseUrl = process.env.BEDS24_BASE_URL || 'https://beds24.com/api/v2';
+    const propertyId = Number(process.env.BEDS24_PROPERTY_ID);
+    const roomId = Number(process.env.BEDS24_ROOM_ID);
+
+    // ✅ 未来日の1日を適当に（今日+30日）ブロックする例
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const date = `${yyyy}-${mm}-${dd}`;
+
+    // 1) refreshToken -> token
+    const tokenResp = await fetch(`${baseUrl}/authentication/token`, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        refreshToken: process.env.BEDS24_REFRESH_TOKEN,
+      },
+    });
+    const tokenJson = await tokenResp.json();
+    if (!tokenResp.ok) {
+      return res.status(500).json({ success: false, step: 'get_token', tokenJson });
+    }
+    const apiToken = tokenJson.token;
+
+    // 2) inventory を 1日だけ CLOSED(=売止め/ブロック) する
+    // Beds24の在庫APIは実装方式が数パターンあるので、まず「最も一般的な」形で投げる
+    const payload = [
+      {
+        propertyId,
+        roomId,
+        date,
+        closed: true,
+        // 必要なら最小滞在なども指定できる
+      },
+    ];
+
+    const invResp = await fetch(`${baseUrl}/inventory`, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        token: apiToken,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const invJson = await invResp.json().catch(() => ({}));
+
+    return res.status(invResp.ok ? 200 : 500).json({
+      success: invResp.ok,
+      date,
+      propertyId,
+      roomId,
+      invJson,
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, error: String(e) });
+  }
 });
