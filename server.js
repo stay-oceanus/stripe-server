@@ -693,14 +693,19 @@ app.listen(port, () => {
   console.log(`🌐 Server listening on port ${port}`);
 });
 
-// ✅ テスト用
-app.get('/test-beds24-block', async (req, res) => {
+// ✅ テスト用：Beds24で1日だけ売止め（closed）を試す
+app.get('/test-beds24-block', async (_req, res) => {
   try {
-    const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
+    const baseUrl = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
+    const refreshToken = process.env.BEDS24_REFRESH_TOKEN;
     const propertyId = Number(process.env.BEDS24_PROPERTY_ID);
     const roomId = Number(process.env.BEDS24_ROOM_ID);
 
-    // ✅ 未来日の1日を適当に（今日+30日）ブロックする例
+    if (!refreshToken) throw new Error('Missing BEDS24_REFRESH_TOKEN');
+    if (!propertyId) throw new Error('Missing BEDS24_PROPERTY_ID');
+    if (!roomId) throw new Error('Missing BEDS24_ROOM_ID');
+
+    // ✅ 未来日の1日を適当に（今日+30日）ブロック
     const d = new Date();
     d.setDate(d.getDate() + 30);
     const yyyy = d.getFullYear();
@@ -713,24 +718,35 @@ app.get('/test-beds24-block', async (req, res) => {
       method: 'GET',
       headers: {
         accept: 'application/json',
-        refreshToken: process.env.BEDS24_REFRESH_TOKEN,
+        refreshToken,
       },
     });
-    const tokenJson = await tokenResp.json();
-    if (!tokenResp.ok) {
-      return res.status(500).json({ success: false, step: 'get_token', tokenJson });
-    }
-    const apiToken = tokenJson.token;
 
-    // 2) inventory を 1日だけ CLOSED(=売止め/ブロック) する
-    // Beds24の在庫APIは実装方式が数パターンあるので、まず「最も一般的な」形で投げる
+    const tokenText = await tokenResp.text();
+    let tokenJson = {};
+    try { tokenJson = JSON.parse(tokenText); } catch {}
+
+    if (!tokenResp.ok) {
+      return res.status(500).json({
+        success: false,
+        step: 'get_token',
+        status: tokenResp.status,
+        tokenText,
+      });
+    }
+
+    const apiToken = tokenJson.token;
+    if (!apiToken) {
+      return res.status(500).json({ success: false, step: 'get_token', error: 'token missing', tokenJson });
+    }
+
+    // 2) inventory を 1日だけ CLOSED(=売止め/ブロック)
     const payload = [
       {
         propertyId,
         roomId,
         date,
         closed: true,
-        // 必要なら最小滞在なども指定できる
       },
     ];
 
@@ -744,16 +760,17 @@ app.get('/test-beds24-block', async (req, res) => {
       body: JSON.stringify(payload),
     });
 
-    const invJson = await invResp.json().catch(() => ({}));
-
+    const invText = await invResp.text();
     return res.status(invResp.ok ? 200 : 500).json({
       success: invResp.ok,
+      step: 'inventory_post',
+      status: invResp.status,
       date,
       propertyId,
       roomId,
-      invJson,
+      invText,
     });
   } catch (e) {
-    return res.status(500).json({ success: false, error: String(e) });
+    return res.status(500).json({ success: false, error: String(e.message || e) });
   }
 });
