@@ -693,19 +693,18 @@ app.listen(port, () => {
   console.log(`🌐 Server listening on port ${port}`);
 });
 
-// ✅ テスト用：Beds24で1日だけ売止め（closed）を試す
+// ✅ テスト用：1日だけ売止め（closed）を入れる
 app.get('/test-beds24-block', async (_req, res) => {
   try {
-    const baseUrl = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
-    const refreshToken = process.env.BEDS24_REFRESH_TOKEN;
+    const baseUrl = process.env.BEDS24_BASE_URL || 'https://beds24.com/api/v2';
     const propertyId = Number(process.env.BEDS24_PROPERTY_ID);
     const roomId = Number(process.env.BEDS24_ROOM_ID);
+    const refreshToken = process.env.BEDS24_REFRESH_TOKEN;
 
-    if (!refreshToken) throw new Error('Missing BEDS24_REFRESH_TOKEN');
-    if (!propertyId) throw new Error('Missing BEDS24_PROPERTY_ID');
-    if (!roomId) throw new Error('Missing BEDS24_ROOM_ID');
+    if (!propertyId || !roomId) throw new Error('Missing propertyId/roomId');
+    if (!refreshToken) throw new Error('Missing refreshToken');
 
-    // ✅ 未来日の1日を適当に（今日+30日）ブロック
+    // ✅ 未来日の1日（今日+30日）
     const d = new Date();
     d.setDate(d.getDate() + 30);
     const yyyy = d.getFullYear();
@@ -718,14 +717,11 @@ app.get('/test-beds24-block', async (_req, res) => {
       method: 'GET',
       headers: {
         accept: 'application/json',
-        refreshToken,
+        refreshToken: refreshToken,
       },
     });
 
     const tokenText = await tokenResp.text();
-    let tokenJson = {};
-    try { tokenJson = JSON.parse(tokenText); } catch {}
-
     if (!tokenResp.ok) {
       return res.status(500).json({
         success: false,
@@ -735,22 +731,28 @@ app.get('/test-beds24-block', async (_req, res) => {
       });
     }
 
+    const tokenJson = JSON.parse(tokenText);
     const apiToken = tokenJson.token;
-    if (!apiToken) {
-      return res.status(500).json({ success: false, step: 'get_token', error: 'token missing', tokenJson });
-    }
+    if (!apiToken) throw new Error(`token missing: ${tokenText}`);
 
-    // 2) inventory を 1日だけ CLOSED(=売止め/ブロック)
-    const payload = [
-      {
-        propertyId,
-        roomId,
-        date,
-        closed: true,
-      },
-    ];
+    // 2) ✅ 正しい在庫APIへ：POST /inventory/rooms/calendar
+    //    Body は docs の例に合わせて data/calendar 形式にする
+    const payload = {
+      data: [
+        {
+          propertyId,
+          roomId,
+          calendar: [
+            {
+              date,
+              closed: true, // 売止め
+            },
+          ],
+        },
+      ],
+    };
 
-    const invResp = await fetch(`${baseUrl}/inventory`, {
+    const invResp = await fetch(`${baseUrl}/inventory/rooms/calendar`, {
       method: 'POST',
       headers: {
         accept: 'application/json',
@@ -761,6 +763,8 @@ app.get('/test-beds24-block', async (_req, res) => {
     });
 
     const invText = await invResp.text();
+
+    // 返り値は配列になることが多い（success/errors など）
     return res.status(invResp.ok ? 200 : 500).json({
       success: invResp.ok,
       step: 'inventory_post',
