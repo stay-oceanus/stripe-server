@@ -220,8 +220,29 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       const paymentIntent = event.data.object;
       const customerEmail = paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
 
+      const sessions = await stripe.checkout.sessions.list({
+        payment_intent: paymentIntent.id,
+        limit: 1,
+      });
+
+      const session = sessions.data[0] || null;
+      const md = session?.metadata || {};
+
+      if (session) {
+        const canceled = await beds24CancelBookingBySessionId(
+          session.id,
+          md.checkin || undefined,
+          md.checkout || undefined
+        );
+        console.log(
+          '🗑️ Beds24 booking canceled from payment_intent.canceled:',
+          JSON.stringify(canceled).slice(0, 1000)
+        );
+      }
+
       const payload = {
         type: 'payment_intent.canceled',
+        data: session ? { object: session } : null,
         email: customerEmail,
         payment_intent: paymentIntent.id,
         payment_status: 'キャンセル',
@@ -300,12 +321,16 @@ async function beds24CreateBookingFromSession(session, paymentMethod = 'card', p
     throw new Error('Beds24 booking requires metadata.checkin and metadata.checkout');
   }
 
-  const firstName = md.lastName ? '' : (md.name || md.firstName || 'Guest');
+  const firstName =
+  md.kanjiFirstName ||
+  md.firstName ||
+  md.name ||
+  'Guest';
+
   const lastName =
-    md.lastName ||
-    md.name ||
-    [md.lastNameKanji, md.firstNameKanji].filter(Boolean).join(' ') ||
-    'Direct Booking';
+  md.kanjiLastName ||
+  md.lastName ||
+  'Direct Booking';
 
   const email = md.email || session.customer_details?.email || session.customer_email || '';
   const phone =
@@ -315,7 +340,15 @@ async function beds24CreateBookingFromSession(session, paymentMethod = 'card', p
     '';
 
   const numAdult = Math.max(1, Number(md.adults || md.numAdults || md.adultCount || 1));
-  const numChild = Math.max(0, Number(md.children || md.numChildren || md.childCount || 0));
+
+  const child11 = Number(md.child11 || 0);
+  const child6  = Number(md.child6 || 0);
+  const child3  = Number(md.child3 || 0);
+
+  const numChild = Math.max(
+    0,
+    Number(md.children || md.numChildren || md.childCount || (child11 + child6 + child3))
+  );
 
   const amountTotal =
     typeof session.amount_total === 'number'
@@ -405,6 +438,53 @@ async function beds24FindExistingBookingBySessionId(sessionId, from, to) {
     const comments = String(row.comments || '');
     return comments.includes(`Stripe session: ${sessionId}`);
   }) || null;
+}
+
+// Beds24 API: Stripe session.id に対応する予約をキャンセル
+async function beds24CancelBookingBySessionId(sessionId, from, to) {
+  if (!sessionId) return null;
+
+  const existing = await beds24FindExistingBookingBySessionId(sessionId, from, to);
+  if (!existing) {
+    console.log(`ℹ️ No Beds24 booking found for session ${sessionId}, skip cancel`);
+    return null;
+  }
+
+  const token = await beds24GetAccessToken();
+
+  const payload = [
+    {
+      id: existing.id,
+      status: 'cancelled',
+    },
+  ];
+
+  const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      token,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Beds24 /bookings cancel failed: ${r.status} ${text}`);
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { raw: text };
+  }
+
+  return {
+    canceledBookingId: existing.id,
+    response: json,
+  };
 }
 
 app.post('/beds24/webhook/booking', async (req, res) => {
@@ -615,6 +695,16 @@ app.post('/cancel/confirm', async (req, res) => {
 
     const canceled = await stripe.paymentIntents.cancel(piId);
 
+    const beds24Canceled = await beds24CancelBookingBySessionId(
+      session.id,
+      md.checkin || undefined,
+      md.checkout || undefined
+    );
+    console.log(
+      '🗑️ Beds24 booking canceled from /cancel/confirm:',
+      JSON.stringify(beds24Canceled).slice(0, 1000)
+    );
+
     // ✅ GASへ通知（シート更新など）
     await forwardEventToGas({
       type: 'manual_capture_canceled',
@@ -623,6 +713,7 @@ app.post('/cancel/confirm', async (req, res) => {
       payment_method: 'card',
       payment_intent: piId,
       cancel_reason: canceled.cancellation_reason || '',
+      beds24_cancel: beds24Canceled || null,
     });
 
     return res.status(200).send('キャンセルが完了しました。ご利用ありがとうございました。');
