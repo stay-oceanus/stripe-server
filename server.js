@@ -156,15 +156,32 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       const pmTypes = session.payment_method_types || [];
       const paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
 
-      // ✅ ステータス（GASにこのまま渡して整合性を作る）
-      // konbini: unpaidなら支払い待ち
-      // card: manual captureだと paid にならないので 仮予約
       let status = '支払い完了';
 
       if (paymentMethod === 'konbini') {
         status = session.payment_status === 'paid' ? '支払い完了' : '支払い待ち';
       } else {
         status = session.payment_status === 'paid' ? '支払い完了' : '仮予約';
+      }
+
+      // ✅ 仮予約/支払い待ちの時点で Beds24 に予約作成して在庫を押さえる
+      const md = session.metadata || {};
+      const existing = await beds24FindExistingBookingBySessionId(
+        session.id,
+        md.checkin || undefined,
+        md.checkout || undefined
+      );
+
+      if (!existing) {
+        const beds24Result = await beds24CreateBookingFromSession(session, paymentMethod, status);
+        console.log(
+          '✅ Beds24 booking created from checkout.session.completed:',
+          JSON.stringify(beds24Result).slice(0, 1000)
+        );
+      } else {
+        console.log(
+          `ℹ️ Beds24 booking already exists for session ${session.id} (bookingId=${existing.id})`
+        );
       }
 
       const payload = {
@@ -175,6 +192,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       };
 
       await forwardEventToGas(payload);
+
     } else if (event.type === 'payment_intent.succeeded') {
       const paymentIntent = event.data.object;
 
@@ -194,8 +212,10 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
           payment_status: '支払い完了',
           payment_method: paymentMethod,
         };
+
         await forwardEventToGas(payload);
       }
+
     } else if (event.type === 'payment_intent.canceled') {
       const paymentIntent = event.data.object;
       const customerEmail = paymentIntent.receipt_email || paymentIntent.metadata?.email || '';
@@ -207,6 +227,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         payment_status: 'キャンセル',
         payment_method: 'konbini',
       };
+
       await forwardEventToGas(payload);
     }
 
@@ -261,6 +282,129 @@ async function beds24GetBookingDetail({ bookingId, from, to }) {
   const text = await r.text();
   if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
   return JSON.parse(text);
+}
+
+// Beds24 API: 予約を1件作成
+async function beds24CreateBookingFromSession(session, paymentMethod = 'card', paymentStatus = '支払い完了') {
+  const token = await beds24GetAccessToken();
+
+  if (!BEDS24_PROPERTY_ID) throw new Error('Missing BEDS24_PROPERTY_ID');
+  if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
+
+  const md = session.metadata || {};
+
+  const checkin = md.checkin || '';
+  const checkout = md.checkout || '';
+
+  if (!checkin || !checkout) {
+    throw new Error('Beds24 booking requires metadata.checkin and metadata.checkout');
+  }
+
+  const firstName = md.lastName ? '' : (md.name || md.firstName || 'Guest');
+  const lastName =
+    md.lastName ||
+    md.name ||
+    [md.lastNameKanji, md.firstNameKanji].filter(Boolean).join(' ') ||
+    'Direct Booking';
+
+  const email = md.email || session.customer_details?.email || session.customer_email || '';
+  const phone =
+    md.phone ||
+    md.tel ||
+    session.customer_details?.phone ||
+    '';
+
+  const numAdult = Math.max(1, Number(md.adults || md.numAdults || md.adultCount || 1));
+  const numChild = Math.max(0, Number(md.children || md.numChildren || md.childCount || 0));
+
+  const amountTotal =
+    typeof session.amount_total === 'number'
+      ? session.amount_total
+      : Number(md.total || 0);
+
+      const commentLines = [
+        'Direct booking sync from stay-oceanus.com',
+        session.id ? `Stripe session: ${session.id}` : '',
+        session.payment_intent ? `PaymentIntent: ${session.payment_intent}` : '',
+        paymentStatus ? `Payment status: ${paymentStatus}` : '',
+        paymentMethod ? `Payment method: ${paymentMethod}` : '',
+        md.detail ? `Detail: ${md.detail}` : '',
+      ].filter(Boolean);
+
+  const payload = [
+    {
+      propertyId: Number(BEDS24_PROPERTY_ID),
+      roomId: Number(BEDS24_ROOM_ID),
+      status: 'confirmed',
+      arrival: checkin,
+      departure: checkout,
+      numAdult,
+      numChild,
+      firstName,
+      lastName,
+      email,
+      phone,
+      referer: 'API',
+      comments: commentLines.join('\n'),
+      price: amountTotal ? Number(amountTotal) : 0,
+    },
+  ];
+
+  const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      token,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Beds24 /bookings create failed: ${r.status} ${text}`);
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { raw: text };
+  }
+
+  return json;
+}
+
+// Beds24 API: 既存予約チェック（Stripe session.id ベース）
+async function beds24FindExistingBookingBySessionId(sessionId, from, to) {
+  if (!sessionId) return null;
+
+  const token = await beds24GetAccessToken();
+
+  const url = new URL(`${BEDS24_BASE_URL}/bookings`);
+  url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
+  url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
+
+  if (from) url.searchParams.set('from', String(from));
+  if (to) url.searchParams.set('to', String(to));
+
+  const r = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { accept: 'application/json', token },
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Beds24 /bookings lookup failed: ${r.status} ${text}`);
+  }
+
+  const json = JSON.parse(text);
+  const rows = Array.isArray(json.data) ? json.data : [];
+
+  return rows.find((row) => {
+    const comments = String(row.comments || '');
+    return comments.includes(`Stripe session: ${sessionId}`);
+  }) || null;
 }
 
 app.post('/beds24/webhook/booking', async (req, res) => {
