@@ -75,6 +75,166 @@ async function beds24GetAccessToken() {
   return token;
 }
 
+function formatYmdJst_(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseYmdToLocalDate_(ymd) {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function addDaysYmd_(ymd, days) {
+  const d = parseYmdToLocalDate_(ymd);
+  d.setDate(d.getDate() + days);
+  return formatYmdJst_(d);
+}
+
+function normalizeBeds24CalendarRows_(json) {
+  if (!json) return [];
+
+  if (Array.isArray(json)) return json;
+  if (Array.isArray(json.data)) return json.data;
+  if (Array.isArray(json.calendar)) return json.calendar;
+  if (Array.isArray(json.rooms)) return json.rooms;
+
+  return [];
+}
+
+function findBeds24CalendarRowByDate_(rows, ymd) {
+  return rows.find((row) => {
+    const rowDate =
+      row.date ||
+      row.day ||
+      row.currentDate ||
+      row.roomDate ||
+      row.calendarDate ||
+      '';
+    return String(rowDate).slice(0, 10) === ymd;
+  }) || null;
+}
+
+/**
+ * Beds24の在庫を最終確認する
+ * - checkin は到着日
+ * - checkout は出発日
+ * - 宿泊在庫は checkin 〜 (checkoutの前日) を確認
+ * - 返り値:
+ *   { ok: true }
+ *   { ok: false, reason: '...', detail: ... }
+ */
+async function beds24CheckAvailability(checkin, checkout) {
+  if (!checkin || !checkout) {
+    return { ok: false, reason: 'checkin/checkout missing' };
+  }
+
+  const token = await beds24GetAccessToken();
+
+  if (!BEDS24_PROPERTY_ID) throw new Error('Missing BEDS24_PROPERTY_ID');
+  if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
+
+  // checkout は非宿泊日なので、前日まで見る
+  const lastNight = addDaysYmd_(checkout, -1);
+
+  const url = new URL(`${BEDS24_BASE_URL}/inventory/rooms/calendar`);
+  url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
+  url.searchParams.set('from', checkin);
+  url.searchParams.set('to', lastNight);
+
+  const r = await fetch(url.toString(), {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      token,
+    },
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Beds24 /inventory/rooms/calendar failed: ${r.status} ${text}`);
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(`Beds24 inventory response is not JSON: ${text}`);
+  }
+
+  const rows = normalizeBeds24CalendarRows_(json);
+
+  if (!rows.length) {
+    return {
+      ok: false,
+      reason: 'inventory rows missing',
+      detail: json,
+    };
+  }
+
+  // checkin ～ lastNight まで全部チェック
+  let d = parseYmdToLocalDate_(checkin);
+  const end = parseYmdToLocalDate_(lastNight);
+
+  while (d <= end) {
+    const ymd = formatYmdJst_(d);
+    const row = findBeds24CalendarRowByDate_(rows, ymd);
+
+    if (!row) {
+      return {
+        ok: false,
+        reason: `inventory row missing for ${ymd}`,
+        detail: rows,
+      };
+    }
+
+    const inventory = Number(
+      row.inventory ??
+      row.qty ??
+      row.quantity ??
+      row.roomsAvailable ??
+      0
+    );
+
+    const closed =
+      row.closed === 1 ||
+      row.closed === true ||
+      String(row.closed).toLowerCase() === 'yes';
+
+    // 到着日は arrival も確認
+    if (ymd === checkin) {
+      const arrivalAllowed =
+        row.arrival === 1 ||
+        row.arrival === true ||
+        String(row.arrival).toLowerCase() === 'yes' ||
+        row.arrival === undefined ||
+        row.arrival === null;
+
+      if (!arrivalAllowed) {
+        return {
+          ok: false,
+          reason: `arrival not allowed on ${ymd}`,
+          detail: row,
+        };
+      }
+    }
+
+    if (closed || inventory <= 0) {
+      return {
+        ok: false,
+        reason: `sold out or closed on ${ymd}`,
+        detail: row,
+      };
+    }
+
+    d.setDate(d.getDate() + 1);
+  }
+
+  return { ok: true };
+}
+
 // === Stripe初期化 ===
 if (!stripeSecretKey) {
   throw new Error('Missing STRIPE_SECRET_KEY in environment variables.');
@@ -741,6 +901,19 @@ app.post('/create-checkout-session', async (req, res) => {
     if (isTomorrowJST(checkin) && isAfterSellStop(now)) {
       return res.status(400).json({
         error: '翌日のチェックインは本日12:00以降は受付できません。',
+      });
+    }
+
+    // ✅ Beds24を正本として在庫最終チェック
+    const checkout = metadata.checkout;
+    const availability = await beds24CheckAvailability(checkin, checkout);
+
+    if (!availability.ok) {
+      console.warn('⚠️ Availability changed before checkout session creation:', availability);
+
+      return res.status(409).json({
+        code: 'AVAILABILITY_CHANGED',
+        error: '他サイトから予約が入ったため、この日程は現在選択できません。最新の空室状況を反映するため、カレンダーを再読み込みしてから再度ご確認ください。'
       });
     }
 
