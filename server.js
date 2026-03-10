@@ -184,6 +184,8 @@ function findBeds24CalendarRowByDate_(rows, ymd) {
  *   { ok: false, reason: '...', detail: ... }
  */
 async function beds24CheckAvailability(checkin, checkout) {
+  const startedAt = Date.now();
+
   if (!checkin || !checkout) {
     return { ok: false, reason: 'checkin/checkout missing' };
   }
@@ -198,6 +200,10 @@ async function beds24CheckAvailability(checkin, checkout) {
   url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
   url.searchParams.set('from', checkin);
   url.searchParams.set('to', checkout);
+  url.searchParams.set('includeInvoiceItems', 'false');
+  url.searchParams.set('includeInfoItems', 'false');
+
+  console.log('🛏️ beds24CheckAvailability start:', url.toString());
 
   const r = await fetch(url.toString(), {
     method: 'GET',
@@ -208,6 +214,8 @@ async function beds24CheckAvailability(checkin, checkout) {
   });
 
   const text = await r.text();
+  console.log('🛏️ beds24CheckAvailability fetch ms =', Date.now() - startedAt);
+
   if (!r.ok) {
     throw new Error(`Beds24 /bookings availability lookup failed: ${r.status} ${text}`);
   }
@@ -219,21 +227,35 @@ async function beds24CheckAvailability(checkin, checkout) {
     throw new Error(`Beds24 bookings response is not JSON: ${text}`);
   }
 
-  console.log('🛏️ Beds24 bookings raw:', JSON.stringify(json).slice(0, 3000));
-
   const rows = Array.isArray(json.data) ? json.data : [];
 
-  // チェック: 対象期間に重なる「有効な予約」があるか
   const hasOverlap = rows.some((row) => {
     const status = String(row.status || '').toLowerCase();
 
-    // cancelled系は除外
-    if (
-      status.includes('cancel') ||
-      status.includes('deleted')
-    ) {
+    if (status.includes('cancel') || status.includes('deleted')) {
       return false;
     }
+
+    const arrival = String(row.arrival || '').slice(0, 10);
+    const departure = String(row.departure || '').slice(0, 10);
+
+    if (!arrival || !departure) return false;
+
+    return arrival < checkout && departure > checkin;
+  });
+
+  console.log('🛏️ beds24CheckAvailability total ms =', Date.now() - startedAt);
+
+  if (hasOverlap) {
+    return {
+      ok: false,
+      reason: 'overlapping booking exists',
+      detail: rows,
+    };
+  }
+
+  return { ok: true };
+}
 
     const arrival = String(row.arrival || '').slice(0, 10);
     const departure = String(row.departure || '').slice(0, 10);
