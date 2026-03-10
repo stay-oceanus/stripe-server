@@ -257,26 +257,6 @@ async function beds24CheckAvailability(checkin, checkout) {
   return { ok: true };
 }
 
-    const arrival = String(row.arrival || '').slice(0, 10);
-    const departure = String(row.departure || '').slice(0, 10);
-
-    if (!arrival || !departure) return false;
-
-    // 重複判定: [arrival, departure) と [checkin, checkout) が重なるか
-    return arrival < checkout && departure > checkin;
-  });
-
-  if (hasOverlap) {
-    return {
-      ok: false,
-      reason: 'overlapping booking exists',
-      detail: rows,
-    };
-  }
-
-  return { ok: true };
-}
-
 // === Stripe初期化 ===
 if (!stripeSecretKey) {
   throw new Error('Missing STRIPE_SECRET_KEY in environment variables.');
