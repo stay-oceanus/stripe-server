@@ -1159,6 +1159,62 @@ app.get('/test-beds24-bookings', async (req, res) => {
   }
 });
 
+// ✅ Beds24 カレンダー返り値確認用
+app.get('/test-beds24-calendar', async (req, res) => {
+  try {
+    const token = await beds24GetAccessToken();
+
+    if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
+
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+
+    if (!from || !to) {
+      return res.status(400).json({
+        success: false,
+        error: 'from と to を指定してください。例: /test-beds24-calendar?from=2026-03-18&to=2026-03-20'
+      });
+    }
+
+    const url = new URL(`${BEDS24_BASE_URL}/inventory/rooms/calendar`);
+    url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
+    url.searchParams.set('from', from);
+    url.searchParams.set('to', to);
+
+    const r = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        token,
+      },
+    });
+
+    const text = await r.text();
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { raw: text };
+    }
+
+    return res.status(r.ok ? 200 : 500).json({
+      success: r.ok,
+      requestUrl: url.toString(),
+      roomId: BEDS24_ROOM_ID,
+      from,
+      to,
+      raw: json,
+      normalized: normalizeBeds24CalendarRows_(json),
+    });
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      error: String(e.message || e),
+    });
+  }
+});
+
 // ✅ サーバー起動
 app.listen(port, () => {
   console.log(`🌐 Server listening on port ${port}`);
