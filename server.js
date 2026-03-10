@@ -1118,6 +1118,35 @@ app.get('/test-beds24-bookings', async (req, res) => {
   }
 });
 
+// ✅ Beds24 在庫判定テスト（本番と同じ判定）
+app.get('/test-beds24-availability', async (req, res) => {
+  try {
+    const checkin = String(req.query.checkin || '');
+    const checkout = String(req.query.checkout || '');
+
+    if (!checkin || !checkout) {
+      return res.status(400).json({
+        success: false,
+        error: 'checkin と checkout を指定してください。例: /test-beds24-availability?checkin=2026-03-18&checkout=2026-03-21'
+      });
+    }
+
+    const result = await beds24CheckAvailability(checkin, checkout);
+
+    return res.json({
+      success: true,
+      checkin,
+      checkout,
+      result
+    });
+  } catch (e) {
+    return res.status(500).json({
+      success: false,
+      error: String(e.message || e),
+    });
+  }
+});
+
 // ✅ Beds24 カレンダー返り値確認用
 app.get('/test-beds24-calendar', async (req, res) => {
   try {
