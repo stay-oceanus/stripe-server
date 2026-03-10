@@ -193,13 +193,11 @@ async function beds24CheckAvailability(checkin, checkout) {
   if (!BEDS24_PROPERTY_ID) throw new Error('Missing BEDS24_PROPERTY_ID');
   if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
 
-  // checkout は非宿泊日なので、前日まで見る
-  const lastNight = addDaysYmd_(checkout, -1);
-
-  const url = new URL(`${BEDS24_BASE_URL}/inventory/rooms/calendar`);
+  const url = new URL(`${BEDS24_BASE_URL}/bookings`);
+  url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
   url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
   url.searchParams.set('from', checkin);
-  url.searchParams.set('to', lastNight);
+  url.searchParams.set('to', checkout);
 
   const r = await fetch(url.toString(), {
     method: 'GET',
@@ -211,88 +209,47 @@ async function beds24CheckAvailability(checkin, checkout) {
 
   const text = await r.text();
   if (!r.ok) {
-    throw new Error(`Beds24 /inventory/rooms/calendar failed: ${r.status} ${text}`);
+    throw new Error(`Beds24 /bookings availability lookup failed: ${r.status} ${text}`);
   }
 
   let json;
   try {
     json = JSON.parse(text);
   } catch {
-    throw new Error(`Beds24 inventory response is not JSON: ${text}`);
+    throw new Error(`Beds24 bookings response is not JSON: ${text}`);
   }
 
-  console.log('🛏️ Beds24 inventory raw:', JSON.stringify(json).slice(0, 2000));
+  console.log('🛏️ Beds24 bookings raw:', JSON.stringify(json).slice(0, 3000));
 
-  const rows = normalizeBeds24CalendarRows_(json);
+  const rows = Array.isArray(json.data) ? json.data : [];
 
-  console.log('🛏️ Beds24 inventory normalized rows:', JSON.stringify(rows).slice(0, 2000));
+  // チェック: 対象期間に重なる「有効な予約」があるか
+  const hasOverlap = rows.some((row) => {
+    const status = String(row.status || '').toLowerCase();
 
-  if (!rows.length) {
+    // cancelled系は除外
+    if (
+      status.includes('cancel') ||
+      status.includes('deleted')
+    ) {
+      return false;
+    }
+
+    const arrival = String(row.arrival || '').slice(0, 10);
+    const departure = String(row.departure || '').slice(0, 10);
+
+    if (!arrival || !departure) return false;
+
+    // 重複判定: [arrival, departure) と [checkin, checkout) が重なるか
+    return arrival < checkout && departure > checkin;
+  });
+
+  if (hasOverlap) {
     return {
       ok: false,
-      reason: 'inventory rows missing',
-      detail: json,
+      reason: 'overlapping booking exists',
+      detail: rows,
     };
-  }
-
-  // checkin ～ lastNight まで全部チェック
-  let d = parseYmdToLocalDate_(checkin);
-  const end = parseYmdToLocalDate_(lastNight);
-
-  while (d <= end) {
-    const ymd = formatYmdJst_(d);
-    const row = findBeds24CalendarRowByDate_(rows, ymd);
-
-    if (!row) {
-      return {
-        ok: false,
-        reason: `inventory row missing for ${ymd}`,
-        detail: rows,
-      };
-    }
-
-    const inventory = Number(
-      row.inventory ??
-      row.qty ??
-      row.quantity ??
-      row.roomsAvailable ??
-      row.available ??
-      row.numAvail ??
-      0
-    );
-
-    const closed =
-      row.closed === 1 ||
-      row.closed === true ||
-      String(row.closed).toLowerCase() === 'yes';
-
-    // 到着日は arrival も確認
-    if (ymd === checkin) {
-      const arrivalAllowed =
-        row.arrival === 1 ||
-        row.arrival === true ||
-        String(row.arrival).toLowerCase() === 'yes' ||
-        row.arrival === undefined ||
-        row.arrival === null;
-
-      if (!arrivalAllowed) {
-        return {
-          ok: false,
-          reason: `arrival not allowed on ${ymd}`,
-          detail: row,
-        };
-      }
-    }
-
-    if (closed || inventory <= 0) {
-      return {
-        ok: false,
-        reason: `sold out or closed on ${ymd}`,
-        detail: row,
-      };
-    }
-
-    d.setDate(d.getDate() + 1);
   }
 
   return { ok: true };
