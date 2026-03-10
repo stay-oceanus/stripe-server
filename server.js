@@ -377,24 +377,38 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
 
     } else if (event.type === 'payment_intent.succeeded') {
       const paymentIntent = event.data.object;
-
+    
       const sessions = await stripe.checkout.sessions.list({
         payment_intent: paymentIntent.id,
         limit: 1,
       });
-
+    
       const session = sessions.data[0];
       if (session) {
         const pmTypes = session.payment_method_types || [];
         const paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
-
+        const md = session.metadata || {};
+    
+        // ✅ Beds24の自社予約を支払い完了に更新
+        const updated = await beds24UpdateBookingStatusBySessionId(
+          session.id,
+          md.checkin || undefined,
+          md.checkout || undefined,
+          'confirmed'
+        );
+    
+        console.log(
+          '✅ Beds24 booking updated from payment_intent.succeeded:',
+          JSON.stringify(updated).slice(0, 1000)
+        );
+    
         const payload = {
           type: 'payment_intent.succeeded',
           data: { object: session },
           payment_status: '支払い完了',
           payment_method: paymentMethod,
         };
-
+    
         await forwardEventToGas(payload);
       }
 
@@ -546,11 +560,11 @@ async function beds24CreateBookingFromSession(session, paymentMethod = 'card', p
         md.detail ? `Detail: ${md.detail}` : '',
       ].filter(Boolean);
 
-  const payload = [
+    const payload = [
     {
       propertyId: Number(BEDS24_PROPERTY_ID),
       roomId: Number(BEDS24_ROOM_ID),
-      status: 'confirmed',
+      status: 'new',
       arrival: checkin,
       departure: checkout,
       numAdult,
@@ -665,6 +679,53 @@ async function beds24CancelBookingBySessionId(sessionId, from, to) {
 
   return {
     canceledBookingId: existing.id,
+    response: json,
+  };
+}
+
+async function beds24UpdateBookingStatusBySessionId(sessionId, from, to, newStatus) {
+  if (!sessionId) return null;
+
+  const existing = await beds24FindExistingBookingBySessionId(sessionId, from, to);
+  if (!existing) {
+    console.log(`ℹ️ No Beds24 booking found for session ${sessionId}, skip status update`);
+    return null;
+  }
+
+  const token = await beds24GetAccessToken();
+
+  const payload = [
+    {
+      id: existing.id,
+      status: newStatus,
+    },
+  ];
+
+  const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
+    method: 'PUT',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      token,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Beds24 /bookings status update failed: ${r.status} ${text}`);
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { raw: text };
+  }
+
+  return {
+    updatedBookingId: existing.id,
+    status: newStatus,
     response: json,
   };
 }
