@@ -96,10 +96,67 @@ function addDaysYmd_(ymd, days) {
 function normalizeBeds24CalendarRows_(json) {
   if (!json) return [];
 
-  if (Array.isArray(json)) return json;
-  if (Array.isArray(json.data)) return json.data;
+  // すでに日別配列ならそのまま返す
+  if (Array.isArray(json)) {
+    // [{date:'2026-03-22', inventory:1}, ...] 形式
+    if (json.length && (
+      json[0].date ||
+      json[0].day ||
+      json[0].currentDate ||
+      json[0].roomDate ||
+      json[0].calendarDate
+    )) {
+      return json;
+    }
+
+    // [{ roomId, propertyId, calendar:[...] }] 形式を平坦化
+    const flattened = [];
+    json.forEach(item => {
+      if (Array.isArray(item?.calendar)) {
+        flattened.push(...item.calendar);
+      }
+    });
+    if (flattened.length) return flattened;
+    return [];
+  }
+
+  // { data:[...] } 形式
+  if (Array.isArray(json.data)) {
+    // data 自体が日別配列
+    if (json.data.length && (
+      json.data[0].date ||
+      json.data[0].day ||
+      json.data[0].currentDate ||
+      json.data[0].roomDate ||
+      json.data[0].calendarDate
+    )) {
+      return json.data;
+    }
+
+    // data が room 配列で、その中に calendar がある場合
+    const flattened = [];
+    json.data.forEach(item => {
+      if (Array.isArray(item?.calendar)) {
+        flattened.push(...item.calendar);
+      }
+    });
+    if (flattened.length) return flattened;
+  }
+
+  // { calendar:[...] } 形式
   if (Array.isArray(json.calendar)) return json.calendar;
-  if (Array.isArray(json.rooms)) return json.rooms;
+
+  // { rooms:[...] } 形式で、その中に calendar がある場合
+  if (Array.isArray(json.rooms)) {
+    const flattened = [];
+    json.rooms.forEach(item => {
+      if (Array.isArray(item?.calendar)) {
+        flattened.push(...item.calendar);
+      }
+    });
+    if (flattened.length) return flattened;
+    return json.rooms;
+  }
 
   return [];
 }
@@ -164,7 +221,11 @@ async function beds24CheckAvailability(checkin, checkout) {
     throw new Error(`Beds24 inventory response is not JSON: ${text}`);
   }
 
+  console.log('🛏️ Beds24 inventory raw:', JSON.stringify(json).slice(0, 2000));
+
   const rows = normalizeBeds24CalendarRows_(json);
+
+  console.log('🛏️ Beds24 inventory normalized rows:', JSON.stringify(rows).slice(0, 2000));
 
   if (!rows.length) {
     return {
@@ -195,6 +256,8 @@ async function beds24CheckAvailability(checkin, checkout) {
       row.qty ??
       row.quantity ??
       row.roomsAvailable ??
+      row.available ??
+      row.numAvail ??
       0
     );
 
