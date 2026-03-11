@@ -1518,3 +1518,12 @@ app.get('/test-beds24-block', async (req, res) => {
     return res.status(500).json({ success: false, error: String(e.message || e) });
   }
 });
+
+app.get('/debug-token', async (req, res) => {
+  try {
+    const token = await beds24GetAccessToken();
+    res.json({ token });
+  } catch (e) {
+    res.json({ error: e.message });
+  }
+});
