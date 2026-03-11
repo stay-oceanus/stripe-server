@@ -354,17 +354,31 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         md.checkout || undefined
       );
 
+      let beds24BookingId = '';
+
       if (!existing) {
         const beds24Result = await beds24CreateBookingFromSession(session, paymentMethod, status);
+        beds24BookingId = extractBeds24BookingIdFromCreateResult(beds24Result);
+
         console.log(
           '✅ Beds24 booking created from checkout.session.completed:',
           JSON.stringify(beds24Result).slice(0, 1000)
         );
+        console.log(`✅ Extracted Beds24 bookingId: ${beds24BookingId || '(not found)'}`);
       } else {
+        beds24BookingId = String(existing.id || '');
         console.log(
-          `ℹ️ Beds24 booking already exists for session ${session.id} (bookingId=${existing.id})`
+          `ℹ️ Beds24 booking already exists for session ${session.id} (bookingId=${beds24BookingId})`
         );
       }
+
+      const payload = {
+        type: event.type,
+        data: { object: session },
+        payment_status: status,
+        payment_method: paymentMethod,
+        beds24_booking_id: beds24BookingId,
+      };
 
       const payload = {
         type: event.type,
@@ -604,6 +618,28 @@ async function beds24CreateBookingFromSession(session, paymentMethod = 'card', p
   return json;
 }
 
+function extractBeds24BookingIdFromCreateResult(result) {
+  if (!result) return '';
+
+  if (result.id) return String(result.id);
+  if (result.bookingId) return String(result.bookingId);
+
+  if (result.new && result.new.id) return String(result.new.id);
+  if (result.new && result.new.bookingId) return String(result.new.bookingId);
+
+  if (Array.isArray(result.data) && result.data[0]) {
+    if (result.data[0].id) return String(result.data[0].id);
+    if (result.data[0].bookingId) return String(result.data[0].bookingId);
+  }
+
+  if (Array.isArray(result.bookings) && result.bookings[0]) {
+    if (result.bookings[0].id) return String(result.bookings[0].id);
+    if (result.bookings[0].bookingId) return String(result.bookings[0].bookingId);
+  }
+
+  return '';
+}
+
 // Beds24 API: 既存予約チェック（Stripe session.id ベース）
 async function beds24FindExistingBookingBySessionId(sessionId, from, to) {
   if (!sessionId) return null;
@@ -663,6 +699,16 @@ async function beds24CancelBookingBySessionId(sessionId, from, to) {
   }
 
   const tryRequests = [
+    {
+      label: 'PUT id + Cancelled',
+      method: 'PUT',
+      body: [{ id: bookingId, status: 'Cancelled' }],
+    },
+    {
+      label: 'PUT bookingId + Cancelled',
+      method: 'PUT',
+      body: [{ bookingId: bookingId, status: 'Cancelled' }],
+    },
     {
       label: 'PUT id + cancelled',
       method: 'PUT',
