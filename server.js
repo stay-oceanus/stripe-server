@@ -315,6 +315,14 @@ function isAtLeast48HoursBeforeCheckinJST(checkinStr) {
 
 app.use(cors());
 
+function safeJsonParse_(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
 // ✅ Webhook用：rawボディ保持（署名検証のため）
 app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.headers['stripe-signature'];
@@ -366,7 +374,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         );
         console.log(`✅ Extracted Beds24 bookingId: ${beds24BookingId || '(not found)'}`);
       } else {
-        beds24BookingId = String(existing.id || '');
+        beds24BookingId = String(existing.id || existing.bookingId || '');
         console.log(
           `ℹ️ Beds24 booking already exists for session ${session.id} (bookingId=${beds24BookingId})`
         );
@@ -600,24 +608,39 @@ async function beds24CreateBookingFromSession(session, paymentMethod = 'card', p
     throw new Error(`Beds24 /bookings create failed: ${r.status} ${text}`);
   }
 
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = { raw: text };
-  }
-
-  return json;
+  return safeJsonParse_(text);
 }
 
 function extractBeds24BookingIdFromCreateResult(result) {
   if (!result) return '';
 
+  // トップレベルが配列のケース
+  if (Array.isArray(result) && result[0]) {
+    const first = result[0];
+
+    if (first.id) return String(first.id);
+    if (first.bookingId) return String(first.bookingId);
+
+    if (first.new?.id) return String(first.new.id);
+    if (first.new?.bookingId) return String(first.new.bookingId);
+
+    if (Array.isArray(first.data) && first.data[0]) {
+      if (first.data[0].id) return String(first.data[0].id);
+      if (first.data[0].bookingId) return String(first.data[0].bookingId);
+    }
+
+    if (Array.isArray(first.bookings) && first.bookings[0]) {
+      if (first.bookings[0].id) return String(first.bookings[0].id);
+      if (first.bookings[0].bookingId) return String(first.bookings[0].bookingId);
+    }
+  }
+
+  // トップレベルがオブジェクトのケース
   if (result.id) return String(result.id);
   if (result.bookingId) return String(result.bookingId);
 
-  if (result.new && result.new.id) return String(result.new.id);
-  if (result.new && result.new.bookingId) return String(result.new.bookingId);
+  if (result.new?.id) return String(result.new.id);
+  if (result.new?.bookingId) return String(result.new.bookingId);
 
   if (Array.isArray(result.data) && result.data[0]) {
     if (result.data[0].id) return String(result.data[0].id);
@@ -689,98 +712,41 @@ async function beds24CancelBookingBySessionId(sessionId, from, to) {
     throw new Error(`Beds24 booking id missing for session ${sessionId}`);
   }
 
-  const propertyId = Number(existing.propertyId || BEDS24_PROPERTY_ID || 0);
-  const roomId = Number(existing.roomId || BEDS24_ROOM_ID || 0);
-
-  const tryRequests = [
+  // Swaggerで成功した形に合わせる
+  const payload = [
     {
-      label: 'PUT full payload + status Cancelled',
-      method: 'PUT',
-      body: [{
-        id: bookingId,
-        propertyId,
-        roomId,
-        status: 'Cancelled',
-      }],
-    },
-    {
-      label: 'PUT full payload + status 0',
-      method: 'PUT',
-      body: [{
-        id: bookingId,
-        propertyId,
-        roomId,
-        status: 0,
-      }],
-    },
-    {
-      label: 'PUT full payload + subStatus Cancelled by host',
-      method: 'PUT',
-      body: [{
-        id: bookingId,
-        propertyId,
-        roomId,
-        status: 'Cancelled',
-        subStatus: 'Cancelled by host',
-      }],
-    },
-    {
-      label: 'PUT full payload + statusCode 0',
-      method: 'PUT',
-      body: [{
-        id: bookingId,
-        propertyId,
-        roomId,
-        statusCode: 0,
-      }],
+      id: bookingId,
+      status: 'cancelled',
     },
   ];
 
-  let lastError = '';
+  console.log(
+    `🛏️ Beds24 cancel try: POST /bookings bookingId=${bookingId} body=${JSON.stringify(payload)}`
+  );
 
-  for (const reqDef of tryRequests) {
-    try {
-      console.log(
-        `🛏️ Beds24 cancel try: ${reqDef.label} bookingId=${bookingId} body=${JSON.stringify(reqDef.body)}`
-      );
+  const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      token,
+    },
+    body: JSON.stringify(payload),
+  });
 
-      const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
-        method: reqDef.method,
-        headers: {
-          accept: 'application/json',
-          'content-type': 'application/json',
-          token,
-        },
-        body: JSON.stringify(reqDef.body),
-      });
+  const text = await r.text();
+  console.log(`🛏️ Beds24 cancel response: status=${r.status} body=${text}`);
 
-      const text = await r.text();
-      console.log(`🛏️ Beds24 cancel response: ${reqDef.label} status=${r.status} body=${text}`);
-
-      if (!r.ok) {
-        lastError = `${reqDef.label} failed: ${r.status} ${text}`;
-        continue;
-      }
-
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        json = { raw: text };
-      }
-
-      return {
-        canceledBookingId: bookingId,
-        requestLabel: reqDef.label,
-        response: json,
-      };
-    } catch (e) {
-      lastError = `${reqDef.label} exception: ${String(e.message || e)}`;
-      console.error(`❌ Beds24 cancel exception on ${reqDef.label}:`, e);
-    }
+  if (!r.ok) {
+    throw new Error(`Beds24 cancel failed for bookingId=${bookingId}: ${r.status} ${text}`);
   }
 
-  throw new Error(`Beds24 cancel failed for bookingId=${bookingId}. lastError=${lastError}`);
+  const json = safeJsonParse_(text);
+
+  return {
+    canceledBookingId: bookingId,
+    response: json,
+  };
 }
 
 async function beds24UpdateBookingStatusBySessionId(sessionId, from, to, newStatus) {
@@ -796,13 +762,13 @@ async function beds24UpdateBookingStatusBySessionId(sessionId, from, to, newStat
 
   const payload = [
     {
-      id: existing.id,
+      id: Number(existing.id),
       status: newStatus,
     },
   ];
 
   const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
-    method: 'PUT',
+    method: 'POST',
     headers: {
       accept: 'application/json',
       'content-type': 'application/json',
@@ -816,12 +782,7 @@ async function beds24UpdateBookingStatusBySessionId(sessionId, from, to, newStat
     throw new Error(`Beds24 /bookings status update failed: ${r.status} ${text}`);
   }
 
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = { raw: text };
-  }
+  const json = safeJsonParse_(text);
 
   return {
     updatedBookingId: existing.id,
