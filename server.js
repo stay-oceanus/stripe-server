@@ -679,18 +679,30 @@ async function beds24CancelBookingBySessionId(sessionId, from, to) {
   const existing = await beds24FindExistingBookingBySessionId(sessionId, from, to);
   if (!existing) {
     console.log(`ℹ️ No Beds24 booking found for session ${sessionId}, skip cancel`);
-    console.log('🛏️ Beds24 existing booking lookup result:',JSON.stringify(existing || null).slice(0, 1000));
     return null;
   }
 
   const token = await beds24GetAccessToken();
-  const bookingId = Number(existing.id || 0);
+  const bookingId = Number(existing.id || existing.bookingId || 0);
 
   if (!bookingId) {
     throw new Error(`Beds24 booking id missing for session ${sessionId}`);
   }
 
+  // まずは「数値 status=0」を最優先で試す
   const tryRequests = [
+    {
+      label: 'PUT id + status 0',
+      method: 'PUT',
+      body: [{ id: bookingId, status: 0 }],
+    },
+    {
+      label: 'PUT bookingId + status 0',
+      method: 'PUT',
+      body: [{ bookingId: bookingId, status: 0 }],
+    },
+
+    // 保険で文字列も残す
     {
       label: 'PUT id + Cancelled',
       method: 'PUT',
@@ -700,26 +712,6 @@ async function beds24CancelBookingBySessionId(sessionId, from, to) {
       label: 'PUT bookingId + Cancelled',
       method: 'PUT',
       body: [{ bookingId: bookingId, status: 'Cancelled' }],
-    },
-    {
-      label: 'PUT id + cancelled',
-      method: 'PUT',
-      body: [{ id: bookingId, status: 'cancelled' }],
-    },
-    {
-      label: 'PUT bookingId + cancelled',
-      method: 'PUT',
-      body: [{ bookingId: bookingId, status: 'cancelled' }],
-    },
-    {
-      label: 'PUT id + cancel',
-      method: 'PUT',
-      body: [{ id: bookingId, status: 'cancel' }],
-    },
-    {
-      label: 'PUT bookingId + cancel',
-      method: 'PUT',
-      body: [{ bookingId: bookingId, status: 'cancel' }],
     },
   ];
 
