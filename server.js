@@ -379,14 +379,6 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         payment_method: paymentMethod,
         beds24_booking_id: beds24BookingId,
       };
-
-      const payload = {
-        type: event.type,
-        data: { object: session },
-        payment_status: status,
-        payment_method: paymentMethod,
-      };
-
       await forwardEventToGas(payload);
 
     } else if (event.type === 'payment_intent.succeeded') {
