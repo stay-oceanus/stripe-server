@@ -630,10 +630,18 @@ async function beds24FindExistingBookingBySessionId(sessionId, from, to) {
   const json = JSON.parse(text);
   const rows = Array.isArray(json.data) ? json.data : [];
 
-  return rows.find((row) => {
-    const comments = String(row.comments || '');
-    return comments.includes(`Stripe session: ${sessionId}`);
-  }) || null;
+  const existing =
+    rows.find((row) => {
+      const comments = String(row.comments || '');
+      return comments.includes(`Stripe session: ${sessionId}`);
+    }) || null;
+
+  console.log(
+    '🛏️ Beds24 existing booking lookup result:',
+    JSON.stringify(existing || null).slice(0, 1000)
+  );
+
+  return existing;
 }
 
 // Beds24 API: Stripe session.id に対応する予約をキャンセル
@@ -643,44 +651,85 @@ async function beds24CancelBookingBySessionId(sessionId, from, to) {
   const existing = await beds24FindExistingBookingBySessionId(sessionId, from, to);
   if (!existing) {
     console.log(`ℹ️ No Beds24 booking found for session ${sessionId}, skip cancel`);
+    console.log('🛏️ Beds24 existing booking lookup result:',JSON.stringify(existing || null).slice(0, 1000));
     return null;
   }
 
   const token = await beds24GetAccessToken();
+  const bookingId = Number(existing.id || 0);
 
-  const payload = [
+  if (!bookingId) {
+    throw new Error(`Beds24 booking id missing for session ${sessionId}`);
+  }
+
+  const tryRequests = [
     {
-      id: existing.id,
-      status: 'cancelled',
+      label: 'PUT id + cancelled',
+      method: 'PUT',
+      body: [{ id: bookingId, status: 'cancelled' }],
+    },
+    {
+      label: 'PUT bookingId + cancelled',
+      method: 'PUT',
+      body: [{ bookingId: bookingId, status: 'cancelled' }],
+    },
+    {
+      label: 'PUT id + cancel',
+      method: 'PUT',
+      body: [{ id: bookingId, status: 'cancel' }],
+    },
+    {
+      label: 'PUT bookingId + cancel',
+      method: 'PUT',
+      body: [{ bookingId: bookingId, status: 'cancel' }],
     },
   ];
 
-  const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
-    method: 'PUT',
-    headers: {
-      accept: 'application/json',
-      'content-type': 'application/json',
-      token,
-    },
-    body: JSON.stringify(payload),
-  });
+  let lastError = '';
 
-  const text = await r.text();
-  if (!r.ok) {
-    throw new Error(`Beds24 /bookings cancel failed: ${r.status} ${text}`);
+  for (const reqDef of tryRequests) {
+    try {
+      console.log(
+        `🛏️ Beds24 cancel try: ${reqDef.label} bookingId=${bookingId} body=${JSON.stringify(reqDef.body)}`
+      );
+
+      const r = await fetch(`${BEDS24_BASE_URL}/bookings`, {
+        method: reqDef.method,
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          token,
+        },
+        body: JSON.stringify(reqDef.body),
+      });
+
+      const text = await r.text();
+      console.log(`🛏️ Beds24 cancel response: ${reqDef.label} status=${r.status} body=${text}`);
+
+      if (!r.ok) {
+        lastError = `${reqDef.label} failed: ${r.status} ${text}`;
+        continue;
+      }
+
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = { raw: text };
+      }
+
+      return {
+        canceledBookingId: bookingId,
+        requestLabel: reqDef.label,
+        response: json,
+      };
+    } catch (e) {
+      lastError = `${reqDef.label} exception: ${String(e.message || e)}`;
+      console.error(`❌ Beds24 cancel exception on ${reqDef.label}:`, e);
+    }
   }
 
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = { raw: text };
-  }
-
-  return {
-    canceledBookingId: existing.id,
-    response: json,
-  };
+  throw new Error(`Beds24 cancel failed for bookingId=${bookingId}. lastError=${lastError}`);
 }
 
 async function beds24UpdateBookingStatusBySessionId(sessionId, from, to, newStatus) {
@@ -907,17 +956,21 @@ app.post('/cancel/confirm', async (req, res) => {
     }
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    if (!session) return res.status(404).send('予約情報が見つかりませんでした。');
+    if (!session) {
+      return res.status(404).send('予約情報が見つかりませんでした。');
+    }
 
     const md = session.metadata || {};
+
     if (md.captureMethod !== 'manual') {
       return res.status(403).send('この予約はキャンセルリンク対象ではありません。');
     }
+
     if (!md.cancelToken || token !== md.cancelToken) {
       return res.status(403).send('キャンセルトークンが一致しません。');
     }
 
-    // ✅ 期限チェック（epoch優先）
+    // ✅ 期限チェック
     const cancelUntilEpoch = md.cancelUntilEpoch ? Number(md.cancelUntilEpoch) : NaN;
     if (Number.isFinite(cancelUntilEpoch) && Date.now() > cancelUntilEpoch) {
       return res.status(410).send('キャンセル可能期限を過ぎています。');
@@ -929,37 +982,80 @@ app.post('/cancel/confirm', async (req, res) => {
     }
 
     const pi = await stripe.paymentIntents.retrieve(piId);
+
     if (pi.status === 'succeeded') {
       return res.status(409).send('この予約は既に確定（支払い完了）しているためキャンセルできません。');
     }
+
     if (pi.status === 'canceled') {
       return res.status(200).send('この予約はすでにキャンセル済みです。');
     }
 
-    const canceled = await stripe.paymentIntents.cancel(piId);
+    // =========================
+    // 1) Stripeキャンセル（最優先）
+    // =========================
+    let canceled = null;
+    try {
+      canceled = await stripe.paymentIntents.cancel(piId);
+      console.log(`✅ Stripe payment canceled: ${piId}`);
+    } catch (e) {
+      console.error('❌ Stripe cancel failed:', e);
+      return res.status(500).send('Stripeのキャンセル処理に失敗しました。お手数ですがご連絡ください。');
+    }
 
-    const beds24Canceled = await beds24CancelBookingBySessionId(
-      session.id,
-      md.checkin || undefined,
-      md.checkout || undefined
-    );
-    console.log(
-      '🗑️ Beds24 booking canceled from /cancel/confirm:',
-      JSON.stringify(beds24Canceled).slice(0, 1000)
-    );
+    // =========================
+    // 2) Beds24キャンセル（失敗しても全体は成功扱い）
+    // =========================
+    let beds24Canceled = null;
+    let beds24CancelError = '';
 
-    // ✅ GASへ通知（シート更新など）
-    await forwardEventToGas({
-      type: 'manual_capture_canceled',
-      data: { object: session },
-      payment_status: 'キャンセル',
-      payment_method: 'card',
-      payment_intent: piId,
-      cancel_reason: canceled.cancellation_reason || '',
-      beds24_cancel: beds24Canceled || null,
-    });
+    try {
+      beds24Canceled = await beds24CancelBookingBySessionId(
+        session.id,
+        md.checkin || undefined,
+        md.checkout || undefined
+      );
+
+      console.log(
+        '🗑️ Beds24 booking canceled from /cancel/confirm:',
+        JSON.stringify(beds24Canceled).slice(0, 1000)
+      );
+    } catch (e) {
+      beds24CancelError = String(e.message || e);
+      console.error('⚠️ Beds24 cancel failed, but Stripe cancel already succeeded:', beds24CancelError);
+    }
+
+    // =========================
+    // 3) GAS通知（失敗しても全体は成功扱い）
+    // =========================
+    try {
+      await forwardEventToGas({
+        type: 'manual_capture_canceled',
+        data: { object: session },
+        payment_status: 'キャンセル',
+        payment_method: 'card',
+        payment_intent: piId,
+        cancel_reason: canceled?.cancellation_reason || '',
+        beds24_cancel: beds24Canceled || null,
+        beds24_cancel_error: beds24CancelError || '',
+      });
+
+      console.log('✅ manual_capture_canceled forwarded to GAS');
+    } catch (e) {
+      console.error('⚠️ GAS forward failed after Stripe cancel:', e);
+    }
+
+    // =========================
+    // 4) ユーザー返却
+    // =========================
+    if (beds24CancelError) {
+      return res.status(200).send(
+        'キャンセルは完了しました。なお、外部在庫連携の更新に時間がかかる場合があります。'
+      );
+    }
 
     return res.status(200).send('キャンセルが完了しました。ご利用ありがとうございました。');
+
   } catch (e) {
     console.error('❌ Cancel execute error:', e);
     return res.status(500).send('キャンセル処理に失敗しました。お手数ですがご連絡ください。');
