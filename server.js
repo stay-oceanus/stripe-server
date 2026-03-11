@@ -689,29 +689,50 @@ async function beds24CancelBookingBySessionId(sessionId, from, to) {
     throw new Error(`Beds24 booking id missing for session ${sessionId}`);
   }
 
-  // まずは「数値 status=0」を最優先で試す
+  const propertyId = Number(existing.propertyId || BEDS24_PROPERTY_ID || 0);
+  const roomId = Number(existing.roomId || BEDS24_ROOM_ID || 0);
+
   const tryRequests = [
     {
-      label: 'PUT id + status 0',
+      label: 'PUT full payload + status Cancelled',
       method: 'PUT',
-      body: [{ id: bookingId, status: 0 }],
+      body: [{
+        id: bookingId,
+        propertyId,
+        roomId,
+        status: 'Cancelled',
+      }],
     },
     {
-      label: 'PUT bookingId + status 0',
+      label: 'PUT full payload + status 0',
       method: 'PUT',
-      body: [{ bookingId: bookingId, status: 0 }],
-    },
-
-    // 保険で文字列も残す
-    {
-      label: 'PUT id + Cancelled',
-      method: 'PUT',
-      body: [{ id: bookingId, status: 'Cancelled' }],
+      body: [{
+        id: bookingId,
+        propertyId,
+        roomId,
+        status: 0,
+      }],
     },
     {
-      label: 'PUT bookingId + Cancelled',
+      label: 'PUT full payload + subStatus Cancelled by host',
       method: 'PUT',
-      body: [{ bookingId: bookingId, status: 'Cancelled' }],
+      body: [{
+        id: bookingId,
+        propertyId,
+        roomId,
+        status: 'Cancelled',
+        subStatus: 'Cancelled by host',
+      }],
+    },
+    {
+      label: 'PUT full payload + statusCode 0',
+      method: 'PUT',
+      body: [{
+        id: bookingId,
+        propertyId,
+        roomId,
+        statusCode: 0,
+      }],
     },
   ];
 
