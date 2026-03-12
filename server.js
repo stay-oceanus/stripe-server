@@ -865,13 +865,49 @@ async function beds24SetNoCheckinOnCheckoutDateFromDetail_(detail) {
     return null;
   }
 
-  // ここは Swagger で確認した値に合わせて後で変える可能性あり
-  const overrideValue = 'noCheckin';
+  const overrideValue = 'noCheckIn';
 
   const result = await beds24SetCalendarOverride_(departure, overrideValue);
 
   console.log(
     `✅ Applied no-checkin override on checkout date ${departure} for bookingId=${bookingId || '(unknown)'}`
+  );
+
+  return {
+    bookingId,
+    departure,
+    overrideValue,
+    result,
+  };
+}
+
+// キャンセルされた予約の checkout日（departure）の override を解除する
+async function beds24ClearCheckoutOverrideFromDetail_(detail) {
+  const first =
+    detail &&
+    Array.isArray(detail.data) &&
+    detail.data[0]
+      ? detail.data[0]
+      : null;
+
+  if (!first) {
+    console.log('ℹ️ No booking detail row found, skip clear checkout override');
+    return null;
+  }
+
+  const departure = String(first.departure || '').slice(0, 10);
+  const bookingId = String(first.id || '');
+
+  if (!departure) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no departure, skip clear checkout override`);
+    return null;
+  }
+
+  const overrideValue = 'none';
+  const result = await beds24SetCalendarOverride_(departure, overrideValue);
+
+  console.log(
+    `✅ Cleared checkout override on ${departure} for bookingId=${bookingId || '(unknown)'}`
   );
 
   return {
