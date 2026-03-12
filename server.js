@@ -62,8 +62,17 @@ async function beds24GetAccessToken() {
   });
 
   const text = await r.text();
-  if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
-  return safeJsonParse_(text);
+  if (!r.ok) {
+    throw new Error(`Beds24 /authentication/token failed: ${r.status} ${text}`);
+  }
+
+  const json = JSON.parse(text);
+  const token = json.token;
+  if (!token) throw new Error(`Beds24 token missing: ${text}`);
+
+  beds24TokenCache = token;
+  beds24TokenFetchedAt = now;
+  return token;
 }
 
 function formatYmdJst_(date) {
@@ -1243,41 +1252,6 @@ app.get('/test-beds24', async (_req, res) => {
   }
 });
 
-// ✅ Beds24 ブッキング取得テスト（指定期間）
-app.get('/test-beds24-bookings', async (req, res) => {
-  try {
-    const token = await beds24GetAccessToken();
-
-    if (!BEDS24_PROPERTY_ID) throw new Error('Missing BEDS24_PROPERTY_ID');
-    if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
-
-    // 期間は ?from=2026-03-01&to=2026-03-31 みたいに渡せる
-    const from = req.query.from || '2026-03-01';
-    const to = req.query.to || '2026-03-31';
-
-    const url = new URL(`${BEDS24_BASE_URL}/bookings`);
-    url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
-    url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
-    url.searchParams.set('from', from);
-    url.searchParams.set('to', to);
-
-    const r = await fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        token: token,
-      },
-    });
-
-    const text = await r.text();
-    if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
-
-    return res.json(safeJsonParse_(text));
-  } catch (e) {
-    return res.status(500).json({ success: false, error: String(e.message || e) });
-  }
-});
-
 // ✅ Beds24 在庫判定テスト（本番と同じ判定）
 app.get('/test-beds24-availability', async (req, res) => {
   try {
@@ -1360,109 +1334,6 @@ app.get('/test-beds24-calendar', async (req, res) => {
       success: false,
       error: String(e.message || e),
     });
-  }
-});
-
-// ✅ テスト用：1日だけ売止め（closed）を入れる
-app.get('/test-beds24-block', async (req, res) => {
-  try {
-    // ✅ 統一：BEDS24_BASE_URL を使う（この関数内で baseUrl を再定義しない）
-    const baseUrl = BEDS24_BASE_URL;
-
-    const propertyId = Number(BEDS24_PROPERTY_ID);
-    const roomId = Number(BEDS24_ROOM_ID);
-
-    if (!BEDS24_REFRESH_TOKEN) throw new Error('Missing BEDS24_REFRESH_TOKEN');
-    if (!propertyId) throw new Error('Missing BEDS24_PROPERTY_ID');
-    if (!roomId) throw new Error('Missing BEDS24_ROOM_ID');
-
-    // ✅ 未来日の1日（今日+30日）
-    const d = new Date();
-    d.setDate(d.getDate() + 30);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const date = `${yyyy}-${mm}-${dd}`;
-
-    // 1) refreshToken -> access token
-    const tokenResp = await fetch(`${baseUrl}/authentication/token`, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        refreshToken: BEDS24_REFRESH_TOKEN,
-      },
-    });
-
-    const tokenText = await tokenResp.text();
-    if (!tokenResp.ok) {
-      return res.status(500).json({
-        success: false,
-        step: 'get_token',
-        status: tokenResp.status,
-        tokenText,
-      });
-    }
-
-    const tokenJson = JSON.parse(tokenText);
-    const apiToken = tokenJson.token;
-    if (!apiToken) throw new Error(`Beds24 token missing: ${tokenText}`);
-
-    // 2) ✅ 在庫（クローズ）反映：v2は /inventory/rooms/calendar を使うのが筋
-    //    ※ payload 形式はBeds24側の定義に依存するので、まず「読めるか」をテストしてから更新が安全
-    //    まず当日1日の状態を読む（GET）
-    const calUrl = new URL(`${baseUrl}/inventory/rooms/calendar`);
-    calUrl.searchParams.set('roomId', String(roomId));
-    calUrl.searchParams.set('from', date);
-    calUrl.searchParams.set('to', date);
-
-    const getResp = await fetch(calUrl.toString(), {
-      method: 'GET',
-      headers: { accept: 'application/json', token: apiToken },
-    });
-    const getText = await getResp.text();
-
-    if (!getResp.ok) {
-      return res.status(500).json({
-        success: false,
-        step: 'inventory_get',
-        status: getResp.status,
-        getText,
-        hint: 'まず /inventory/rooms/calendar がこのトークンで読めるか確認',
-      });
-    }
-
-    // 次に「閉じる」を更新（PUT/POST はアカウント設定とAPI仕様で変わることがあるため、両対応の形で投げる）
-    // まずPUTを試す
-    const putPayload = [
-      { roomId, date, closed: 1 }, // closed は 0/1
-    ];
-
-    const putResp = await fetch(`${baseUrl}/inventory/rooms/calendar`, {
-      method: 'PUT',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-        token: apiToken,
-      },
-      body: JSON.stringify(putPayload),
-    });
-
-    const putText = await putResp.text();
-
-    return res.status(200).json({
-      success: putResp.ok,
-      step: 'inventory_put',
-      date,
-      propertyId,
-      roomId,
-      inventory_get_preview: getText.slice(0, 500),
-      put_status: putResp.status,
-      put_text: putText.slice(0, 1000),
-      note: 'PUTが405/400なら、Beds24 swaggerの /inventory/rooms/calendar の method/payload に合わせてPOSTへ変更',
-    });
-  } catch (e) {
-    console.error('❌ test-beds24-block error:', e);
-    return res.status(500).json({ success: false, error: String(e.message || e) });
   }
 });
 
