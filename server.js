@@ -791,6 +791,97 @@ async function beds24UpdateBookingStatusBySessionId(sessionId, from, to, newStat
   };
 }
 
+// Beds24 API: 特定日の override を入れる
+async function beds24SetCalendarOverride_(ymd, overrideValue) {
+  if (!ymd) throw new Error('ymd is required');
+  if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
+
+  const token = await beds24GetAccessToken();
+
+  const payload = [
+    {
+      roomId: Number(BEDS24_ROOM_ID),
+      calendar: [
+        {
+          from: ymd,
+          to: ymd,
+          override: overrideValue,
+        },
+      ],
+    },
+  ];
+
+  console.log(
+    '🗓️ Beds24 set calendar override payload:',
+    JSON.stringify(payload)
+  );
+
+  const r = await fetch(`${BEDS24_BASE_URL}/inventory/rooms/calendar`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      token,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await r.text();
+  console.log(`🗓️ Beds24 set calendar override response: status=${r.status} body=${text}`);
+
+  if (!r.ok) {
+    throw new Error(`Beds24 /inventory/rooms/calendar failed: ${r.status} ${text}`);
+  }
+
+  return safeJsonParse_(text);
+}
+
+// 予約詳細から checkout日（departure）へチェックイン不可 override を入れる
+async function beds24SetNoCheckinOnCheckoutDateFromDetail_(detail) {
+  const first =
+    detail &&
+    Array.isArray(detail.data) &&
+    detail.data[0]
+      ? detail.data[0]
+      : null;
+
+  if (!first) {
+    console.log('ℹ️ No booking detail row found, skip checkout override');
+    return null;
+  }
+
+  const departure = String(first.departure || '').slice(0, 10);
+  const status = String(first.status || '').toLowerCase();
+  const bookingId = String(first.id || '');
+
+  if (!departure) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no departure, skip checkout override`);
+    return null;
+  }
+
+  // キャンセル済みは入れない
+  if (status.includes('cancel') || status.includes('deleted')) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} is canceled/deleted, skip checkout override`);
+    return null;
+  }
+
+  // ここは Swagger で確認した値に合わせて後で変える可能性あり
+  const overrideValue = 'noCheckin';
+
+  const result = await beds24SetCalendarOverride_(departure, overrideValue);
+
+  console.log(
+    `✅ Applied no-checkin override on checkout date ${departure} for bookingId=${bookingId || '(unknown)'}`
+  );
+
+  return {
+    bookingId,
+    departure,
+    overrideValue,
+    result,
+  };
+}
+
 app.post('/beds24/webhook/booking', async (req, res) => {
   try {
     // 1) 超簡易認証（URLトークン）
@@ -828,13 +919,22 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       detail = await beds24GetBookingDetail({ from: fmt(from), to: fmt(to) });
     }
 
-    // 5) GASへ転送（あなたの既存 forwardEventToGas を流用）
+    // 5) checkout日へ「チェックイン不可」override を自動反映
+    let checkoutOverrideResult = null;
+    try {
+      checkoutOverrideResult = await beds24SetNoCheckinOnCheckoutDateFromDetail_(detail);
+    } catch (e) {
+      console.error('⚠️ Failed to apply checkout no-checkin override:', e.message);
+    }
+
+    // 6) GASへ転送（あなたの既存 forwardEventToGas を流用）
     await forwardEventToGas({
       type: 'beds24_booking_webhook',
       beds24: {
         bookingId: bookingId || '',
         raw: body,
-        detail
+        detail,
+        checkout_override: checkoutOverrideResult,
       }
     });
 
@@ -1249,6 +1349,23 @@ app.get('/test-beds24', async (_req, res) => {
     res.json({ success: true, tokenPreview: token.slice(0, 12) + '...' });
   } catch (e) {
     res.status(500).json({ success: false, error: String(e.message || e) });
+  }
+});
+
+// ⚠️ Swagger確認用：Beds24 access token を一時表示
+// 使い終わったら必ず削除すること
+app.get('/debug-beds24-token', async (_req, res) => {
+  try {
+    const token = await beds24GetAccessToken();
+    res.json({
+      success: true,
+      token: token
+    });
+  } catch (e) {
+    res.status(500).json({
+      success: false,
+      error: String(e.message || e)
+    });
   }
 });
 
