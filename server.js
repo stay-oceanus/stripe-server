@@ -62,17 +62,8 @@ async function beds24GetAccessToken() {
   });
 
   const text = await r.text();
-  if (!r.ok) {
-    throw new Error(`Beds24 /authentication/token failed: ${r.status} ${text}`);
-  }
-
-  const json = JSON.parse(text);
-  const token = json.token;
-  if (!token) throw new Error(`Beds24 token missing: ${text}`);
-
-  beds24TokenCache = token;
-  beds24TokenFetchedAt = now;
-  return token;
+  if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
+  return safeJsonParse_(text);
 }
 
 function formatYmdJst_(date) {
@@ -512,7 +503,7 @@ async function beds24GetBookingDetail({ bookingId, from, to }) {
 
   const text = await r.text();
   if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
-  return JSON.parse(text);
+  return safeJsonParse_(text);
 }
 
 // Beds24 API: 予約を1件作成
@@ -678,7 +669,7 @@ async function beds24FindExistingBookingBySessionId(sessionId, from, to) {
     throw new Error(`Beds24 /bookings lookup failed: ${r.status} ${text}`);
   }
 
-  const json = JSON.parse(text);
+  const json = safeJsonParse_(text);
   const rows = Array.isArray(json.data) ? json.data : [];
 
   const existing =
@@ -1281,7 +1272,7 @@ app.get('/test-beds24-bookings', async (req, res) => {
     const text = await r.text();
     if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
 
-    return res.json(JSON.parse(text));
+    return res.json(safeJsonParse_(text));
   } catch (e) {
     return res.status(500).json({ success: false, error: String(e.message || e) });
   }
@@ -1370,11 +1361,6 @@ app.get('/test-beds24-calendar', async (req, res) => {
       error: String(e.message || e),
     });
   }
-});
-
-// ✅ サーバー起動
-app.listen(port, () => {
-  console.log(`🌐 Server listening on port ${port}`);
 });
 
 // ✅ テスト用：1日だけ売止め（closed）を入れる
@@ -1480,11 +1466,7 @@ app.get('/test-beds24-block', async (req, res) => {
   }
 });
 
-app.get('/debug-token', async (req, res) => {
-  try {
-    const token = await beds24GetAccessToken();
-    res.json({ token });
-  } catch (e) {
-    res.json({ error: e.message });
-  }
+// ✅ サーバー起動
+app.listen(port, () => {
+  console.log(`🌐 Server listening on port ${port}`);
 });
