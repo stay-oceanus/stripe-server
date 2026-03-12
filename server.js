@@ -955,12 +955,29 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       detail = await beds24GetBookingDetail({ from: fmt(from), to: fmt(to) });
     }
 
-    // 5) checkout日へ「チェックイン不可」override を自動反映
+    // 5) 予約なら checkout日に noCheckIn、キャンセルなら none に戻す
     let checkoutOverrideResult = null;
+    let checkoutOverrideClearedResult = null;
+
     try {
-      checkoutOverrideResult = await beds24SetNoCheckinOnCheckoutDateFromDetail_(detail);
+      const first =
+        detail &&
+        Array.isArray(detail.data) &&
+        detail.data[0]
+          ? detail.data[0]
+          : null;
+
+      const detailStatus = String(first?.status || '').toLowerCase();
+
+      if (detailStatus.includes('cancel') || detailStatus.includes('deleted')) {
+        checkoutOverrideClearedResult =
+          await beds24ClearCheckoutOverrideFromDetail_(detail);
+      } else {
+        checkoutOverrideResult =
+          await beds24SetNoCheckinOnCheckoutDateFromDetail_(detail);
+      }
     } catch (e) {
-      console.error('⚠️ Failed to apply checkout no-checkin override:', e.message);
+      console.error('⚠️ Failed to sync checkout override:', e.message);
     }
 
     // 6) GASへ転送（あなたの既存 forwardEventToGas を流用）
@@ -971,6 +988,7 @@ app.post('/beds24/webhook/booking', async (req, res) => {
         raw: body,
         detail,
         checkout_override: checkoutOverrideResult,
+        checkout_override_cleared: checkoutOverrideClearedResult,
       }
     });
 
@@ -1168,9 +1186,34 @@ app.post('/cancel/confirm', async (req, res) => {
         '🗑️ Beds24 booking canceled from /cancel/confirm:',
         JSON.stringify(beds24Canceled).slice(0, 1000)
       );
+
+      // checkout日の override 解除
+      try {
+        const canceledDetail = await beds24GetBookingDetail({
+          bookingId: beds24Canceled?.canceledBookingId || undefined,
+          from: md.checkin || undefined,
+          to: md.checkout || undefined,
+        });
+
+        const cleared = await beds24ClearCheckoutOverrideFromDetail_(canceledDetail);
+
+        console.log(
+          '🧹 Beds24 checkout override clear result from /cancel/confirm:',
+          JSON.stringify(cleared).slice(0, 1000)
+        );
+      } catch (clearErr) {
+        console.error(
+          '⚠️ Failed to clear checkout override after /cancel/confirm:',
+          clearErr.message
+        );
+      }
+
     } catch (e) {
       beds24CancelError = String(e.message || e);
-      console.error('⚠️ Beds24 cancel failed, but Stripe cancel already succeeded:', beds24CancelError);
+      console.error(
+        '⚠️ Beds24 cancel failed, but Stripe cancel already succeeded:',
+        beds24CancelError
+      );
     }
 
     // =========================
