@@ -1531,23 +1531,6 @@ app.get('/test-beds24', async (_req, res) => {
   }
 });
 
-// ⚠️ Swagger確認用：Beds24 access token を一時表示
-// 使い終わったら必ず削除すること
-app.get('/debug-beds24-token', async (_req, res) => {
-  try {
-    const token = await beds24GetAccessToken();
-    res.json({
-      success: true,
-      token: token
-    });
-  } catch (e) {
-    res.status(500).json({
-      success: false,
-      error: String(e.message || e)
-    });
-  }
-});
-
 // ✅ Beds24 在庫判定テスト（本番と同じ判定）
 app.get('/test-beds24-availability', async (req, res) => {
   try {
