@@ -918,6 +918,87 @@ async function beds24ClearCheckoutOverrideFromDetail_(detail) {
   };
 }
 
+// 予約詳細から checkin日（arrival）へチェックアウト不可 override を入れる
+async function beds24SetNoCheckoutOnCheckinDateFromDetail_(detail) {
+  const first =
+    detail &&
+    Array.isArray(detail.data) &&
+    detail.data[0]
+      ? detail.data[0]
+      : null;
+
+  if (!first) {
+    console.log('ℹ️ No booking detail row found, skip checkin no-checkout override');
+    return null;
+  }
+
+  const arrival = String(first.arrival || '').slice(0, 10);
+  const status = String(first.status || '').toLowerCase();
+  const bookingId = String(first.id || '');
+
+  if (!arrival) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival, skip checkin no-checkout override`);
+    return null;
+  }
+
+  // キャンセル済みは入れない
+  if (status.includes('cancel') || status.includes('deleted')) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} is canceled/deleted, skip checkin no-checkout override`);
+    return null;
+  }
+
+  const overrideValue = 'noCheckOut';
+  const result = await beds24SetCalendarOverride_(arrival, overrideValue);
+
+  console.log(
+    `✅ Applied no-checkout override on checkin date ${arrival} for bookingId=${bookingId || '(unknown)'}`
+  );
+
+  return {
+    bookingId,
+    arrival,
+    overrideValue,
+    result,
+  };
+}
+
+// キャンセルされた予約の checkin日（arrival）の override を解除する
+async function beds24ClearCheckinOverrideFromDetail_(detail) {
+  const first =
+    detail &&
+    Array.isArray(detail.data) &&
+    detail.data[0]
+      ? detail.data[0]
+      : null;
+
+  if (!first) {
+    console.log('ℹ️ No booking detail row found, skip clear checkin override');
+    return null;
+  }
+
+  const arrival = String(first.arrival || '').slice(0, 10);
+  const bookingId = String(first.id || '');
+
+  if (!arrival) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival, skip clear checkin override`);
+    return null;
+  }
+
+  const overrideValue = 'none';
+  const result = await beds24SetCalendarOverride_(arrival, overrideValue);
+
+  console.log(
+    `✅ Cleared checkin override on ${arrival} for bookingId=${bookingId || '(unknown)'}`
+  );
+
+  return {
+    bookingId,
+    arrival,
+    overrideValue,
+    result,
+  };
+}
+
 app.post('/beds24/webhook/booking', async (req, res) => {
   try {
     // 1) 超簡易認証（URLトークン）
@@ -955,9 +1036,14 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       detail = await beds24GetBookingDetail({ from: fmt(from), to: fmt(to) });
     }
 
-    // 5) 予約なら checkout日に noCheckIn、キャンセルなら none に戻す
+    // 5) 予約なら
+    //    - checkout日に noCheckIn
+    //    - checkin日に noCheckOut
+    //    キャンセルなら両方 none に戻す
     let checkoutOverrideResult = null;
+    let checkinOverrideResult = null;
     let checkoutOverrideClearedResult = null;
+    let checkinOverrideClearedResult = null;
 
     try {
       const first =
@@ -972,12 +1058,18 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       if (detailStatus.includes('cancel') || detailStatus.includes('deleted')) {
         checkoutOverrideClearedResult =
           await beds24ClearCheckoutOverrideFromDetail_(detail);
+
+        checkinOverrideClearedResult =
+          await beds24ClearCheckinOverrideFromDetail_(detail);
       } else {
         checkoutOverrideResult =
           await beds24SetNoCheckinOnCheckoutDateFromDetail_(detail);
+
+        checkinOverrideResult =
+          await beds24SetNoCheckoutOnCheckinDateFromDetail_(detail);
       }
     } catch (e) {
-      console.error('⚠️ Failed to sync checkout override:', e.message);
+      console.error('⚠️ Failed to sync checkin/checkout override:', e.message);
     }
 
     // 6) GASへ転送（あなたの既存 forwardEventToGas を流用）
@@ -988,7 +1080,9 @@ app.post('/beds24/webhook/booking', async (req, res) => {
         raw: body,
         detail,
         checkout_override: checkoutOverrideResult,
+        checkin_override: checkinOverrideResult,
         checkout_override_cleared: checkoutOverrideClearedResult,
+        checkin_override_cleared: checkinOverrideClearedResult,
       }
     });
 
@@ -1187,7 +1281,7 @@ app.post('/cancel/confirm', async (req, res) => {
         JSON.stringify(beds24Canceled).slice(0, 1000)
       );
 
-      // checkout日の override 解除
+      // checkin / checkout 両方の override 解除
       try {
         const canceledDetail = await beds24GetBookingDetail({
           bookingId: beds24Canceled?.canceledBookingId || undefined,
@@ -1195,15 +1289,21 @@ app.post('/cancel/confirm', async (req, res) => {
           to: md.checkout || undefined,
         });
 
-        const cleared = await beds24ClearCheckoutOverrideFromDetail_(canceledDetail);
+        const clearedCheckout = await beds24ClearCheckoutOverrideFromDetail_(canceledDetail);
+        const clearedCheckin = await beds24ClearCheckinOverrideFromDetail_(canceledDetail);
 
         console.log(
           '🧹 Beds24 checkout override clear result from /cancel/confirm:',
-          JSON.stringify(cleared).slice(0, 1000)
+          JSON.stringify(clearedCheckout).slice(0, 1000)
+        );
+
+        console.log(
+          '🧹 Beds24 checkin override clear result from /cancel/confirm:',
+          JSON.stringify(clearedCheckin).slice(0, 1000)
         );
       } catch (clearErr) {
         console.error(
-          '⚠️ Failed to clear checkout override after /cancel/confirm:',
+          '⚠️ Failed to clear checkin/checkout override after /cancel/confirm:',
           clearErr.message
         );
       }
