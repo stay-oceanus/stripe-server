@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const app = express();
 
 // === モード切り替え（test / live） ===
-const mode = process.env.APP_MODE || 'test';
+const mode = process.env.APP_MODE || 'live';
 console.log(`🚀 Running in ${mode.toUpperCase()} mode`);
 
 // === Stripe設定 ===
