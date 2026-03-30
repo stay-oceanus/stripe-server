@@ -1616,6 +1616,15 @@ app.get('/test-beds24-calendar', async (req, res) => {
   }
 });
 
+app.get('/debug-beds24-token', async (_req, res) => {
+  try {
+    const token = await beds24GetAccessToken();
+    res.json({ success: true, token });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String(e.message || e) });
+  }
+});
+
 // ✅ サーバー起動
 app.listen(port, () => {
   console.log(`🌐 Server listening on port ${port}`);
