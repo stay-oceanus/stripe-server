@@ -367,17 +367,35 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       if (!existing) {
         const beds24Result = await beds24CreateBookingFromSession(session, paymentMethod, status);
         beds24BookingId = extractBeds24BookingIdFromCreateResult(beds24Result);
-
+      
         console.log(
           '✅ Beds24 booking created from checkout.session.completed:',
           JSON.stringify(beds24Result).slice(0, 1000)
         );
         console.log(`✅ Extracted Beds24 bookingId: ${beds24BookingId || '(not found)'}`);
-      } else {
-        beds24BookingId = String(existing.id || existing.bookingId || '');
-        console.log(
-          `ℹ️ Beds24 booking already exists for session ${session.id} (bookingId=${beds24BookingId})`
-        );
+      
+        // 追加：作成直後に blackout を入れる
+        if (beds24BookingId) {
+          try {
+            const createdDetail = await beds24GetBookingDetail({
+              bookingId: beds24BookingId,
+              from: md.checkin || undefined,
+              to: md.checkout || undefined,
+            });
+      
+            const blackoutResult = await beds24SetBlackoutRangeFromDetail_(createdDetail);
+      
+            console.log(
+              '✅ Beds24 blackout applied right after create:',
+              JSON.stringify(blackoutResult).slice(0, 1000)
+            );
+          } catch (blackoutErr) {
+            console.error(
+              '⚠️ Beds24 booking was created but blackout apply failed:',
+              blackoutErr.message
+            );
+          }
+        }
       }
 
       const payload = {
