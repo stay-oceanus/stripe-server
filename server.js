@@ -374,28 +374,25 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         );
         console.log(`✅ Extracted Beds24 bookingId: ${beds24BookingId || '(not found)'}`);
       
-        // 追加：作成直後に blackout を入れる
         if (beds24BookingId) {
           try {
-            const createdDetail = await beds24GetBookingDetail({
-              bookingId: beds24BookingId,
-              from: md.checkin || undefined,
-              to: md.checkout || undefined,
-            });
-      
-            const blackoutResult = await beds24SetBlackoutRangeFromDetail_(createdDetail);
+            const stayRuleResult = await beds24ApplyStayRules_(
+              md.checkin || '',
+              md.checkout || ''
+            );
       
             console.log(
-              '✅ Beds24 blackout applied right after create:',
-              JSON.stringify(blackoutResult).slice(0, 1000)
+              '✅ Beds24 stay rules applied right after create:',
+              JSON.stringify(stayRuleResult).slice(0, 1000)
             );
-          } catch (blackoutErr) {
+          } catch (stayRuleErr) {
             console.error(
-              '⚠️ Beds24 booking was created but blackout apply failed:',
-              blackoutErr.message
+              '⚠️ Beds24 booking was created but stay rules apply failed:',
+              stayRuleErr.message
             );
           }
         }
+      
       } else {
         beds24BookingId = String(existing.id || existing.bookingId || '');
         console.log(
@@ -859,87 +856,40 @@ async function beds24SetCalendarOverrideRange_(fromYmd, toYmd, overrideValue) {
   return safeJsonParse_(text);
 }
 
-// 予約詳細から stay期間全体（arrival〜departure）を blackout にする
-async function beds24SetBlackoutRangeFromDetail_(detail) {
-  const first =
-    detail &&
-    Array.isArray(detail.data) &&
-    detail.data[0]
-      ? detail.data[0]
-      : null;
+async function beds24ClearStayRules_(arrival, departure) {
+  if (!arrival || !departure) return null;
 
-  if (!first) {
-    console.log('ℹ️ No booking detail row found, skip blackout set');
-    return null;
-  }
-
-  const arrival = String(first.arrival || '').slice(0, 10);
-  const departure = String(first.departure || '').slice(0, 10);
-  const status = String(first.status || '').toLowerCase();
-  const bookingId = String(first.id || '');
-
-  if (!arrival || !departure) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival/departure, skip blackout set`);
-    return null;
-  }
-
-  if (status.includes('cancel') || status.includes('deleted')) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} is canceled/deleted, skip blackout set`);
-    return null;
-  }
-
-  const overrideValue = 'blackout';
-  const result = await beds24SetCalendarOverrideRange_(arrival, departure, overrideValue);
-
-  console.log(
-    `✅ Applied blackout on ${arrival}〜${departure} for bookingId=${bookingId || '(unknown)'}`
+  // IN日
+  await beds24SetCalendarOverrideRange_(
+    arrival,
+    arrival,
+    'none'
   );
 
-  return {
-    bookingId,
-    arrival,
+  // OUT日
+  await beds24SetCalendarOverrideRange_(
     departure,
-    overrideValue,
-    result,
-  };
-}
-
-// キャンセルされた予約の stay期間全体（arrival〜departure）の blackout を解除する
-async function beds24ClearBlackoutRangeFromDetail_(detail) {
-  const first =
-    detail &&
-    Array.isArray(detail.data) &&
-    detail.data[0]
-      ? detail.data[0]
-      : null;
-
-  if (!first) {
-    console.log('ℹ️ No booking detail row found, skip blackout clear');
-    return null;
-  }
-
-  const arrival = String(first.arrival || '').slice(0, 10);
-  const departure = String(first.departure || '').slice(0, 10);
-  const bookingId = String(first.id || '');
-
-  if (!arrival || !departure) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival/departure, skip blackout clear`);
-    return null;
-  }
-
-  const overrideValue = 'none';
-  const result = await beds24SetCalendarOverrideRange_(arrival, departure, overrideValue);
-
-  console.log(
-    `✅ Cleared blackout on ${arrival}〜${departure} for bookingId=${bookingId || '(unknown)'}`
+    departure,
+    'none'
   );
 
+  // 中日
+  const midStart = addDaysYmd_(arrival, 1);
+  const midEnd = addDaysYmd_(departure, -1);
+
+  if (midStart <= midEnd) {
+    await beds24SetCalendarOverrideRange_(
+      midStart,
+      midEnd,
+      'none'
+    );
+  }
+
   return {
-    bookingId,
     arrival,
     departure,
-    overrideValue,
-    result,
+    midStart,
+    midEnd,
   };
 }
 
@@ -980,12 +930,7 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       detail = await beds24GetBookingDetail({ from: fmt(from), to: fmt(to) });
     }
 
-    // 5) 予約なら
-    //    checkout日 - checkin日まで blackout override を入れる
-    //    キャンセルなら全て none に戻す
-    let blackoutResult = null;
-    let blackoutClearedResult = null;
-
+    // 5) Beds24側の予約状態に応じて stay rule を反映 / 解除
     try {
       const first =
         detail &&
@@ -994,17 +939,29 @@ app.post('/beds24/webhook/booking', async (req, res) => {
           ? detail.data[0]
           : null;
 
+      const arrival = String(first?.arrival || '').slice(0, 10);
+      const departure = String(first?.departure || '').slice(0, 10);
       const detailStatus = String(first?.status || '').toLowerCase();
 
-      if (detailStatus.includes('cancel') || detailStatus.includes('deleted')) {
-        blackoutClearedResult =
-          await beds24ClearBlackoutRangeFromDetail_(detail);
+      if (arrival && departure) {
+        if (detailStatus.includes('cancel') || detailStatus.includes('deleted')) {
+          const clearResult = await beds24ClearStayRules_(arrival, departure);
+          console.log(
+            '🧹 Beds24 stay rules cleared from webhook:',
+            JSON.stringify(clearResult).slice(0, 1000)
+          );
+        } else {
+          const applyResult = await beds24ApplyStayRules_(arrival, departure);
+          console.log(
+            '✅ Beds24 stay rules applied from webhook:',
+            JSON.stringify(applyResult).slice(0, 1000)
+          );
+        }
       } else {
-        blackoutResult =
-          await beds24SetBlackoutRangeFromDetail_(detail);
+        console.log('ℹ️ arrival/departure missing in detail, skip stay rules sync');
       }
     } catch (e) {
-      console.error('⚠️ Failed to sync blackout range:', e.message);
+      console.error('⚠️ Failed to sync stay rules from webhook:', e.message);
     }
 
     // 6) GASへ転送（あなたの既存 forwardEventToGas を流用）
@@ -1014,8 +971,6 @@ app.post('/beds24/webhook/booking', async (req, res) => {
         bookingId: bookingId || '',
         raw: body,
         detail,
-        blackout_range: blackoutResult,
-        blackout_range_cleared: blackoutClearedResult,
       }
     });
 
@@ -1214,23 +1169,20 @@ app.post('/cancel/confirm', async (req, res) => {
         JSON.stringify(beds24Canceled).slice(0, 1000)
       );
 
-      // stay期間全体の blackout を解除
+      // stay rule を解除
       try {
-        const canceledDetail = await beds24GetBookingDetail({
-          bookingId: beds24Canceled?.canceledBookingId || undefined,
-          from: md.checkin || undefined,
-          to: md.checkout || undefined,
-        });
-
-        const clearedBlackout = await beds24ClearBlackoutRangeFromDetail_(canceledDetail);
+        const clearedStayRules = await beds24ClearStayRules_(
+          md.checkin || '',
+          md.checkout || ''
+        );
 
         console.log(
-          '🧹 Beds24 blackout clear result from /cancel/confirm:',
-          JSON.stringify(clearedBlackout).slice(0, 1000)
+          '🧹 Beds24 stay rules clear result from /cancel/confirm:',
+          JSON.stringify(clearedStayRules).slice(0, 1000)
         );
       } catch (clearErr) {
         console.error(
-          '⚠️ Failed to clear blackout after /cancel/confirm:',
+          '⚠️ Failed to clear stay rules after /cancel/confirm:',
           clearErr.message
         );
       }
