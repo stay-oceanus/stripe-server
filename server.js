@@ -791,9 +791,9 @@ async function beds24UpdateBookingStatusBySessionId(sessionId, from, to, newStat
   };
 }
 
-// Beds24 API: 特定日の override を入れる
-async function beds24SetCalendarOverride_(ymd, overrideValue) {
-  if (!ymd) throw new Error('ymd is required');
+// Beds24 API: 期間指定で override を入れる
+async function beds24SetCalendarOverrideRange_(fromYmd, toYmd, overrideValue) {
+  if (!fromYmd || !toYmd) throw new Error('fromYmd and toYmd are required');
   if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
 
   const token = await beds24GetAccessToken();
@@ -803,8 +803,8 @@ async function beds24SetCalendarOverride_(ymd, overrideValue) {
       roomId: Number(BEDS24_ROOM_ID),
       calendar: [
         {
-          from: ymd,
-          to: ymd,
+          from: fromYmd,
+          to: toYmd,
           override: overrideValue,
         },
       ],
@@ -812,7 +812,7 @@ async function beds24SetCalendarOverride_(ymd, overrideValue) {
   ];
 
   console.log(
-    '🗓️ Beds24 set calendar override payload:',
+    '🗓️ Beds24 set calendar override range payload:',
     JSON.stringify(payload)
   );
 
@@ -827,7 +827,7 @@ async function beds24SetCalendarOverride_(ymd, overrideValue) {
   });
 
   const text = await r.text();
-  console.log(`🗓️ Beds24 set calendar override response: status=${r.status} body=${text}`);
+  console.log(`🗓️ Beds24 set calendar override range response: status=${r.status} body=${text}`);
 
   if (!r.ok) {
     throw new Error(`Beds24 /inventory/rooms/calendar failed: ${r.status} ${text}`);
@@ -836,8 +836,8 @@ async function beds24SetCalendarOverride_(ymd, overrideValue) {
   return safeJsonParse_(text);
 }
 
-// 予約詳細から checkout日（departure）へチェックイン不可 override を入れる
-async function beds24SetNoCheckinOnCheckoutDateFromDetail_(detail) {
+// 予約詳細から stay期間全体（arrival〜departure）を blackout にする
+async function beds24SetBlackoutRangeFromDetail_(detail) {
   const first =
     detail &&
     Array.isArray(detail.data) &&
@@ -846,43 +846,43 @@ async function beds24SetNoCheckinOnCheckoutDateFromDetail_(detail) {
       : null;
 
   if (!first) {
-    console.log('ℹ️ No booking detail row found, skip checkout override');
+    console.log('ℹ️ No booking detail row found, skip blackout set');
     return null;
   }
 
+  const arrival = String(first.arrival || '').slice(0, 10);
   const departure = String(first.departure || '').slice(0, 10);
   const status = String(first.status || '').toLowerCase();
   const bookingId = String(first.id || '');
 
-  if (!departure) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no departure, skip checkout override`);
+  if (!arrival || !departure) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival/departure, skip blackout set`);
     return null;
   }
 
-  // キャンセル済みは入れない
   if (status.includes('cancel') || status.includes('deleted')) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} is canceled/deleted, skip checkout override`);
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} is canceled/deleted, skip blackout set`);
     return null;
   }
 
-  const overrideValue = 'noCheckIn';
-
-  const result = await beds24SetCalendarOverride_(departure, overrideValue);
+  const overrideValue = 'blackout';
+  const result = await beds24SetCalendarOverrideRange_(arrival, departure, overrideValue);
 
   console.log(
-    `✅ Applied no-checkin override on checkout date ${departure} for bookingId=${bookingId || '(unknown)'}`
+    `✅ Applied blackout on ${arrival}〜${departure} for bookingId=${bookingId || '(unknown)'}`
   );
 
   return {
     bookingId,
+    arrival,
     departure,
     overrideValue,
     result,
   };
 }
 
-// キャンセルされた予約の checkout日（departure）の override を解除する
-async function beds24ClearCheckoutOverrideFromDetail_(detail) {
+// キャンセルされた予約の stay期間全体（arrival〜departure）の blackout を解除する
+async function beds24ClearBlackoutRangeFromDetail_(detail) {
   const first =
     detail &&
     Array.isArray(detail.data) &&
@@ -891,109 +891,30 @@ async function beds24ClearCheckoutOverrideFromDetail_(detail) {
       : null;
 
   if (!first) {
-    console.log('ℹ️ No booking detail row found, skip clear checkout override');
+    console.log('ℹ️ No booking detail row found, skip blackout clear');
     return null;
   }
 
+  const arrival = String(first.arrival || '').slice(0, 10);
   const departure = String(first.departure || '').slice(0, 10);
   const bookingId = String(first.id || '');
 
-  if (!departure) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no departure, skip clear checkout override`);
+  if (!arrival || !departure) {
+    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival/departure, skip blackout clear`);
     return null;
   }
 
   const overrideValue = 'none';
-  const result = await beds24SetCalendarOverride_(departure, overrideValue);
+  const result = await beds24SetCalendarOverrideRange_(arrival, departure, overrideValue);
 
   console.log(
-    `✅ Cleared checkout override on ${departure} for bookingId=${bookingId || '(unknown)'}`
+    `✅ Cleared blackout on ${arrival}〜${departure} for bookingId=${bookingId || '(unknown)'}`
   );
 
   return {
     bookingId,
+    arrival,
     departure,
-    overrideValue,
-    result,
-  };
-}
-
-// 予約詳細から checkin日（arrival）へチェックアウト不可 override を入れる
-async function beds24SetNoCheckoutOnCheckinDateFromDetail_(detail) {
-  const first =
-    detail &&
-    Array.isArray(detail.data) &&
-    detail.data[0]
-      ? detail.data[0]
-      : null;
-
-  if (!first) {
-    console.log('ℹ️ No booking detail row found, skip checkin no-checkout override');
-    return null;
-  }
-
-  const arrival = String(first.arrival || '').slice(0, 10);
-  const status = String(first.status || '').toLowerCase();
-  const bookingId = String(first.id || '');
-
-  if (!arrival) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival, skip checkin no-checkout override`);
-    return null;
-  }
-
-  // キャンセル済みは入れない
-  if (status.includes('cancel') || status.includes('deleted')) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} is canceled/deleted, skip checkin no-checkout override`);
-    return null;
-  }
-
-  const overrideValue = 'noCheckOut';
-  const result = await beds24SetCalendarOverride_(arrival, overrideValue);
-
-  console.log(
-    `✅ Applied no-checkout override on checkin date ${arrival} for bookingId=${bookingId || '(unknown)'}`
-  );
-
-  return {
-    bookingId,
-    arrival,
-    overrideValue,
-    result,
-  };
-}
-
-// キャンセルされた予約の checkin日（arrival）の override を解除する
-async function beds24ClearCheckinOverrideFromDetail_(detail) {
-  const first =
-    detail &&
-    Array.isArray(detail.data) &&
-    detail.data[0]
-      ? detail.data[0]
-      : null;
-
-  if (!first) {
-    console.log('ℹ️ No booking detail row found, skip clear checkin override');
-    return null;
-  }
-
-  const arrival = String(first.arrival || '').slice(0, 10);
-  const bookingId = String(first.id || '');
-
-  if (!arrival) {
-    console.log(`ℹ️ Booking ${bookingId || '(unknown)'} has no arrival, skip clear checkin override`);
-    return null;
-  }
-
-  const overrideValue = 'none';
-  const result = await beds24SetCalendarOverride_(arrival, overrideValue);
-
-  console.log(
-    `✅ Cleared checkin override on ${arrival} for bookingId=${bookingId || '(unknown)'}`
-  );
-
-  return {
-    bookingId,
-    arrival,
     overrideValue,
     result,
   };
@@ -1037,13 +958,10 @@ app.post('/beds24/webhook/booking', async (req, res) => {
     }
 
     // 5) 予約なら
-    //    - checkout日に noCheckIn
-    //    - checkin日に noCheckOut
-    //    キャンセルなら両方 none に戻す
-    let checkoutOverrideResult = null;
-    let checkinOverrideResult = null;
-    let checkoutOverrideClearedResult = null;
-    let checkinOverrideClearedResult = null;
+    //    checkout日 - checkin日まで blackout override を入れる
+    //    キャンセルなら全て none に戻す
+    let blackoutResult = null;
+    let blackoutClearedResult = null;
 
     try {
       const first =
@@ -1056,20 +974,14 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       const detailStatus = String(first?.status || '').toLowerCase();
 
       if (detailStatus.includes('cancel') || detailStatus.includes('deleted')) {
-        checkoutOverrideClearedResult =
-          await beds24ClearCheckoutOverrideFromDetail_(detail);
-
-        checkinOverrideClearedResult =
-          await beds24ClearCheckinOverrideFromDetail_(detail);
+        blackoutClearedResult =
+          await beds24ClearBlackoutRangeFromDetail_(detail);
       } else {
-        checkoutOverrideResult =
-          await beds24SetNoCheckinOnCheckoutDateFromDetail_(detail);
-
-        checkinOverrideResult =
-          await beds24SetNoCheckoutOnCheckinDateFromDetail_(detail);
+        blackoutResult =
+          await beds24SetBlackoutRangeFromDetail_(detail);
       }
     } catch (e) {
-      console.error('⚠️ Failed to sync checkin/checkout override:', e.message);
+      console.error('⚠️ Failed to sync blackout range:', e.message);
     }
 
     // 6) GASへ転送（あなたの既存 forwardEventToGas を流用）
@@ -1079,10 +991,8 @@ app.post('/beds24/webhook/booking', async (req, res) => {
         bookingId: bookingId || '',
         raw: body,
         detail,
-        checkout_override: checkoutOverrideResult,
-        checkin_override: checkinOverrideResult,
-        checkout_override_cleared: checkoutOverrideClearedResult,
-        checkin_override_cleared: checkinOverrideClearedResult,
+        blackout_range: blackoutResult,
+        blackout_range_cleared: blackoutClearedResult,
       }
     });
 
@@ -1281,7 +1191,7 @@ app.post('/cancel/confirm', async (req, res) => {
         JSON.stringify(beds24Canceled).slice(0, 1000)
       );
 
-      // checkin / checkout 両方の override 解除
+      // stay期間全体の blackout を解除
       try {
         const canceledDetail = await beds24GetBookingDetail({
           bookingId: beds24Canceled?.canceledBookingId || undefined,
@@ -1289,21 +1199,15 @@ app.post('/cancel/confirm', async (req, res) => {
           to: md.checkout || undefined,
         });
 
-        const clearedCheckout = await beds24ClearCheckoutOverrideFromDetail_(canceledDetail);
-        const clearedCheckin = await beds24ClearCheckinOverrideFromDetail_(canceledDetail);
+        const clearedBlackout = await beds24ClearBlackoutRangeFromDetail_(canceledDetail);
 
         console.log(
-          '🧹 Beds24 checkout override clear result from /cancel/confirm:',
-          JSON.stringify(clearedCheckout).slice(0, 1000)
-        );
-
-        console.log(
-          '🧹 Beds24 checkin override clear result from /cancel/confirm:',
-          JSON.stringify(clearedCheckin).slice(0, 1000)
+          '🧹 Beds24 blackout clear result from /cancel/confirm:',
+          JSON.stringify(clearedBlackout).slice(0, 1000)
         );
       } catch (clearErr) {
         console.error(
-          '⚠️ Failed to clear checkin/checkout override after /cancel/confirm:',
+          '⚠️ Failed to clear blackout after /cancel/confirm:',
           clearErr.message
         );
       }
