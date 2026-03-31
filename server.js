@@ -396,6 +396,11 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
             );
           }
         }
+      } else {
+        beds24BookingId = String(existing.id || existing.bookingId || '');
+        console.log(
+          `ℹ️ Beds24 booking already exists for session ${session.id} (bookingId=${beds24BookingId})`
+        );
       }
 
       const payload = {
