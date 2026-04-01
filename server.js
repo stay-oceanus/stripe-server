@@ -470,6 +470,23 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
         );
       }
 
+      try {
+        const clearedStayRules = await beds24ClearStayRules_(
+          md.checkin || '',
+          md.checkout || ''
+        );
+      
+        console.log(
+          '🧹 Beds24 stay rules clear result from payment_intent.canceled:',
+          JSON.stringify(clearedStayRules).slice(0, 1000)
+        );
+      } catch (clearErr) {
+        console.error(
+          '⚠️ Failed to clear stay rules after payment_intent.canceled:',
+          clearErr.message
+        );
+      }
+
       const payload = {
         type: 'payment_intent.canceled',
         data: session ? { object: session } : null,
@@ -1206,24 +1223,6 @@ app.post('/cancel/confirm', async (req, res) => {
         JSON.stringify(beds24Canceled).slice(0, 1000)
       );
 
-      try {
-        const clearedStayRules = await beds24ClearStayRules_(
-          md.checkin || '',
-          md.checkout || ''
-        );
-
-        console.log(
-          '🧹 Beds24 stay rules clear result from /cancel/confirm:',
-          JSON.stringify(clearedStayRules).slice(0, 1000)
-        );
-      } catch (clearErr) {
-        console.error(
-          '⚠️ Failed to clear stay rules after /cancel/confirm:',
-          clearErr.message
-        );
-      }
-
-      // stay rule を解除
       try {
         const clearedStayRules = await beds24ClearStayRules_(
           md.checkin || '',
