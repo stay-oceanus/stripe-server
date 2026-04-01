@@ -856,6 +856,43 @@ async function beds24SetCalendarOverrideRange_(fromYmd, toYmd, overrideValue) {
   return safeJsonParse_(text);
 }
 
+async function beds24ApplyStayRules_(arrival, departure) {
+  if (!arrival || !departure) return null;
+
+  // IN日
+  await beds24SetCalendarOverrideRange_(
+    arrival,
+    arrival,
+    'noCheckInOrCheckOut'
+  );
+
+  // OUT日
+  await beds24SetCalendarOverrideRange_(
+    departure,
+    departure,
+    'noCheckInOrCheckOut'
+  );
+
+  // 中日
+  const midStart = addDaysYmd_(arrival, 1);
+  const midEnd = addDaysYmd_(departure, -1);
+
+  if (midStart <= midEnd) {
+    await beds24SetCalendarOverrideRange_(
+      midStart,
+      midEnd,
+      'blackout'
+    );
+  }
+
+  return {
+    arrival,
+    departure,
+    midStart,
+    midEnd,
+  };
+}
+
 async function beds24ClearStayRules_(arrival, departure) {
   if (!arrival || !departure) return null;
 
@@ -1168,6 +1205,23 @@ app.post('/cancel/confirm', async (req, res) => {
         '🗑️ Beds24 booking canceled from /cancel/confirm:',
         JSON.stringify(beds24Canceled).slice(0, 1000)
       );
+
+      try {
+        const clearedStayRules = await beds24ClearStayRules_(
+          md.checkin || '',
+          md.checkout || ''
+        );
+
+        console.log(
+          '🧹 Beds24 stay rules clear result from /cancel/confirm:',
+          JSON.stringify(clearedStayRules).slice(0, 1000)
+        );
+      } catch (clearErr) {
+        console.error(
+          '⚠️ Failed to clear stay rules after /cancel/confirm:',
+          clearErr.message
+        );
+      }
 
       // stay rule を解除
       try {
