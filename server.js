@@ -40,6 +40,8 @@ const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v
 const BEDS24_REFRESH_TOKEN = process.env.BEDS24_REFRESH_TOKEN;
 const BEDS24_PROPERTY_ID = process.env.BEDS24_PROPERTY_ID;
 const BEDS24_ROOM_ID = process.env.BEDS24_ROOM_ID;
+const BEDS24_SYNC_FROM_DAYS = -7;
+const BEDS24_SYNC_TO_DAYS = 365;
 
 let beds24TokenCache = null;
 let beds24TokenFetchedAt = 0;
@@ -525,31 +527,126 @@ app.get('/beds24/webhook/booking', (req, res) => {
   return res.status(200).send('OK (token verified)');
 });
 
-// Beds24 API: bookingId で詳細を取る（取れない場合は期間で拾う）
-async function beds24GetBookingDetail({ bookingId, from, to }) {
+function buildBeds24SyncWindow_() {
+  const today = new Date();
+
+  const from = new Date(today);
+  from.setDate(from.getDate() + BEDS24_SYNC_FROM_DAYS);
+
+  const to = new Date(today);
+  to.setDate(to.getDate() + BEDS24_SYNC_TO_DAYS);
+
+  return {
+    from: formatYmdJst_(from),
+    to: formatYmdJst_(to),
+  };
+}
+
+async function beds24ListBookingsInWindow_(from, to) {
   const token = await beds24GetAccessToken();
 
+  if (!BEDS24_PROPERTY_ID) throw new Error('Missing BEDS24_PROPERTY_ID');
+  if (!BEDS24_ROOM_ID) throw new Error('Missing BEDS24_ROOM_ID');
+
   const url = new URL(`${BEDS24_BASE_URL}/bookings`);
+  url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
+  url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
+  url.searchParams.set('from', String(from));
+  url.searchParams.set('to', String(to));
+  url.searchParams.set('includeInvoiceItems', 'false');
+  url.searchParams.set('includeInfoItems', 'false');
 
-  // property/room はあなたの設計通り固定でもOK（1棟なら特に）
-  if (BEDS24_PROPERTY_ID) url.searchParams.set('propertyId', String(BEDS24_PROPERTY_ID));
-  if (BEDS24_ROOM_ID) url.searchParams.set('roomId', String(BEDS24_ROOM_ID));
-
-  // まず bookingId が取れるならそれ優先（最小取得）
-  if (bookingId) url.searchParams.set('bookingId', String(bookingId));
-
-  // bookingId が無い/効かない時の保険：from/to
-  if (from) url.searchParams.set('from', String(from));
-  if (to) url.searchParams.set('to', String(to));
+  console.log('📚 Beds24 snapshot fetch:', url.toString());
 
   const r = await fetch(url.toString(), {
     method: 'GET',
-    headers: { accept: 'application/json', token }
+    headers: {
+      accept: 'application/json',
+      token,
+    },
   });
 
   const text = await r.text();
-  if (!r.ok) throw new Error(`Beds24 /bookings failed: ${r.status} ${text}`);
-  return safeJsonParse_(text);
+  if (!r.ok) {
+    throw new Error(`Beds24 /bookings snapshot failed: ${r.status} ${text}`);
+  }
+
+  const json = safeJsonParse_(text);
+  const rows = Array.isArray(json.data) ? json.data : [];
+
+  console.log(`📚 Beds24 snapshot rows=${rows.length} window=${from}..${to}`);
+
+  return {
+    from,
+    to,
+    rows,
+    raw: json,
+  };
+}
+
+function extractBeds24BookingIdFromWebhookBody_(body) {
+  if (!body) return '';
+
+  // 直接 bookingId が来るケース
+  if (body.bookingId) return String(body.bookingId);
+  if (body.id) return String(body.id);
+
+  // detail.data[0] に入るケース
+  if (body.detail && Array.isArray(body.detail.data) && body.detail.data[0]) {
+    const first = body.detail.data[0];
+    if (first.id) return String(first.id);
+    if (first.bookingId) return String(first.bookingId);
+  }
+
+  // raw.data[0] 的なケースの保険
+  if (Array.isArray(body.data) && body.data[0]) {
+    const first = body.data[0];
+    if (first.id) return String(first.id);
+    if (first.bookingId) return String(first.bookingId);
+  }
+
+  return '';
+}
+
+async function beds24GetBookingDetailById_(bookingId) {
+  if (!bookingId) throw new Error('bookingId is required');
+
+  const token = await beds24GetAccessToken();
+
+  const url = new URL(`${BEDS24_BASE_URL}/bookings`);
+  url.searchParams.set('id', String(bookingId));
+  url.searchParams.set('includeInvoiceItems', 'false');
+  url.searchParams.set('includeInfoItems', 'false');
+
+  console.log('🔎 Beds24 booking detail fetch:', url.toString());
+
+  const r = await fetch(url.toString(), {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      token,
+    },
+  });
+
+  const text = await r.text();
+  if (!r.ok) {
+    throw new Error(`Beds24 /bookings detail failed: ${r.status} ${text}`);
+  }
+
+  const json = safeJsonParse_(text);
+  const rows = Array.isArray(json.data) ? json.data : [];
+
+  const first = rows[0] || null;
+
+  console.log(
+    '🔎 Beds24 booking detail first row:',
+    JSON.stringify(first).slice(0, 1000)
+  );
+
+  return {
+    raw: json,
+    row: first,
+  };
 }
 
 // Beds24 API: 予約を1件作成
@@ -955,102 +1052,108 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       return res.status(403).send('Forbidden');
     }
 
-    // 2) 受信ボディ（Beds24の実際の形に依存するので、まずログ）
+    // 2) 受信ボディ
     const body = req.body || {};
     console.log('📩 Beds24 webhook received:', JSON.stringify(body).slice(0, 2000));
 
     const action = String(body.action || '').toUpperCase();
-
-    const bookingId =
-      body.bookingId ||
-      body.bookingID ||
-      body.id ||
-      (Array.isArray(body.bookingIds) ? body.bookingIds[0] : null) ||
-      (body.booking ? (body.booking.bookingId || body.booking.id) : null) ||
-      null;
-    
     console.log('🧪 Beds24 webhook action =', action);
-    console.log('🧪 extracted bookingId =', bookingId);
-    
-    // 3) bookingIdが無い webhook（例: SYNC_ROOM）は、予約1件を特定できないので
-    //    stay rule の apply / clear は行わない
-    if (!bookingId) {
-      console.log('ℹ️ bookingId missing, skip stay-rule sync for this webhook');
-    
-      await forwardEventToGas({
-        type: 'beds24_booking_webhook',
-        beds24: {
-          bookingId: '',
-          raw: body,
-          detail: null,
-        }
-      });
-    
-      return res.json({ ok: true, skipped: 'bookingId_missing' });
-    }
 
-    // 4) bookingId で詳細取得（ダメなら期間で保険取得）
-    //    from/to は webhook に入ってないこともあるので、保険で「今日±120日」でも可
-    let detail;
-    try {
-      detail = await beds24GetBookingDetail({ bookingId });
-    } catch (e) {
-      const today = new Date();
-      const from = new Date(today); from.setDate(from.getDate() - 3);
-      const to = new Date(today); to.setDate(to.getDate() + 365);
+    // 3) bookingId をまず抜いてみる
+    const bookingId = extractBeds24BookingIdFromWebhookBody_(body);
+    console.log('🧪 extracted bookingId =', bookingId || '(none)');
 
-      const fmt = (d) =>
-        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    // =========================================
+    // A. bookingId が取れたら direct sync を優先
+    // =========================================
+    if (bookingId) {
+      let detail = null;
+      let detailRow = null;
 
-      detail = await beds24GetBookingDetail({ from: fmt(from), to: fmt(to) });
-    }
-
-    // 5) Beds24側の予約状態に応じて stay rule を反映 / 解除
-    try {
-      const rows = Array.isArray(detail?.data) ? detail.data : [];
-      const first = rows.find((row) => {
-        const id = String(row.id || row.bookingId || '');
-        return id === String(bookingId);
-      }) || null;
-      
-      console.log('🧪 matched booking detail =', JSON.stringify(first || null).slice(0, 1000));      
-
-      const arrival = String(first?.arrival || '').slice(0, 10);
-      const departure = String(first?.departure || '').slice(0, 10);
-      const detailStatus = String(first?.status || '').toLowerCase();
-
-      if (arrival && departure) {
-        if (detailStatus.includes('cancel') || detailStatus.includes('deleted')) {
-          const clearResult = await beds24ClearStayRules_(arrival, departure);
-          console.log(
-            '🧹 Beds24 stay rules cleared from webhook:',
-            JSON.stringify(clearResult).slice(0, 1000)
-          );
-        } else {
-          const applyResult = await beds24ApplyStayRules_(arrival, departure);
-          console.log(
-            '✅ Beds24 stay rules applied from webhook:',
-            JSON.stringify(applyResult).slice(0, 1000)
-          );
-        }
-      } else {
-        console.log('ℹ️ arrival/departure missing in detail, skip stay rules sync');
+      try {
+        detail = await beds24GetBookingDetailById_(bookingId);
+        detailRow = detail.row || null;
+      } catch (detailErr) {
+        console.error('⚠️ Beds24 detail fetch failed, fallback to snapshot:', detailErr.message);
       }
-    } catch (e) {
-      console.error('⚠️ Failed to sync stay rules from webhook:', e.message);
+
+      // オーバーライド処理は従来どおり bookingId が取れた時だけ直でやる
+      if (detailRow) {
+        const arrival = String(detailRow.arrival || '').slice(0, 10);
+        const departure = String(detailRow.departure || '').slice(0, 10);
+        const status = String(detailRow.status || '').toLowerCase();
+
+        try {
+          if (arrival && departure) {
+            if (status.includes('cancel') || status.includes('deleted')) {
+              const clearResult = await beds24ClearStayRules_(arrival, departure);
+              console.log(
+                '🧹 Beds24 stay rules cleared from webhook direct sync:',
+                JSON.stringify(clearResult).slice(0, 1000)
+              );
+            } else {
+              const stayRuleResult = await beds24ApplyStayRules_(arrival, departure);
+              console.log(
+                '✅ Beds24 stay rules applied from webhook direct sync:',
+                JSON.stringify(stayRuleResult).slice(0, 1000)
+              );
+            }
+          } else {
+            console.log('ℹ️ arrival/departure missing, skip stay-rule sync');
+          }
+        } catch (stayRuleErr) {
+          console.error('⚠️ stay-rule sync failed in direct sync:', stayRuleErr.message);
+        }
+
+        // GASへは 1件詳細を送る
+        await forwardEventToGas({
+          type: 'beds24_booking_direct_sync',
+          beds24: {
+            action,
+            bookingId: String(bookingId),
+            raw: body,
+            detail: detail.raw,
+          },
+        });
+
+        console.log(`✅ Beds24 direct sync forwarded to GAS. bookingId=${bookingId}`);
+
+        return res.json({
+          ok: true,
+          mode: 'direct_sync',
+          bookingId: String(bookingId),
+        });
+      }
     }
 
-    // 6) GASへ転送（あなたの既存 forwardEventToGas を流用）
+    // =========================================
+    // B. bookingId が取れない/詳細取得失敗 → snapshot fallback
+    // =========================================
+    const syncWindow = buildBeds24SyncWindow_();
+    const snapshot = await beds24ListBookingsInWindow_(syncWindow.from, syncWindow.to);
+
     await forwardEventToGas({
-      type: 'beds24_booking_webhook',
+      type: 'beds24_snapshot_sync',
       beds24: {
-        bookingId: bookingId || '',
+        action,
         raw: body,
-        detail,
+        syncWindow,
+        snapshotCount: snapshot.rows.length,
+        snapshot: snapshot.rows,
       }
     });
 
-    return res.json({ ok: true });
+    console.log(
+      `✅ Beds24 snapshot forwarded to GAS. rows=${snapshot.rows.length} window=${syncWindow.from}..${syncWindow.to}`
+    );
+
+    return res.json({
+      ok: true,
+      mode: 'snapshot_sync',
+      rows: snapshot.rows.length,
+      from: syncWindow.from,
+      to: syncWindow.to,
+    });
   } catch (e) {
     console.error('❌ Beds24 webhook error:', e);
     return res.status(500).json({ ok: false, error: String(e.message || e) });
