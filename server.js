@@ -959,7 +959,8 @@ app.post('/beds24/webhook/booking', async (req, res) => {
     const body = req.body || {};
     console.log('📩 Beds24 webhook received:', JSON.stringify(body).slice(0, 2000));
 
-    // 3) bookingId をできるだけ拾う（形が違っても耐える）
+    const action = String(body.action || '').toUpperCase();
+
     const bookingId =
       body.bookingId ||
       body.bookingID ||
@@ -967,6 +968,26 @@ app.post('/beds24/webhook/booking', async (req, res) => {
       (Array.isArray(body.bookingIds) ? body.bookingIds[0] : null) ||
       (body.booking ? (body.booking.bookingId || body.booking.id) : null) ||
       null;
+    
+    console.log('🧪 Beds24 webhook action =', action);
+    console.log('🧪 extracted bookingId =', bookingId);
+    
+    // 3) bookingIdが無い webhook（例: SYNC_ROOM）は、予約1件を特定できないので
+    //    stay rule の apply / clear は行わない
+    if (!bookingId) {
+      console.log('ℹ️ bookingId missing, skip stay-rule sync for this webhook');
+    
+      await forwardEventToGas({
+        type: 'beds24_booking_webhook',
+        beds24: {
+          bookingId: '',
+          raw: body,
+          detail: null,
+        }
+      });
+    
+      return res.json({ ok: true, skipped: 'bookingId_missing' });
+    }
 
     // 4) bookingId で詳細取得（ダメなら期間で保険取得）
     //    from/to は webhook に入ってないこともあるので、保険で「今日±120日」でも可
@@ -986,12 +1007,13 @@ app.post('/beds24/webhook/booking', async (req, res) => {
 
     // 5) Beds24側の予約状態に応じて stay rule を反映 / 解除
     try {
-      const first =
-        detail &&
-        Array.isArray(detail.data) &&
-        detail.data[0]
-          ? detail.data[0]
-          : null;
+      const rows = Array.isArray(detail?.data) ? detail.data : [];
+      const first = rows.find((row) => {
+        const id = String(row.id || row.bookingId || '');
+        return id === String(bookingId);
+      }) || null;
+      
+      console.log('🧪 matched booking detail =', JSON.stringify(first || null).slice(0, 1000));      
 
       const arrival = String(first?.arrival || '').slice(0, 10);
       const departure = String(first?.departure || '').slice(0, 10);
