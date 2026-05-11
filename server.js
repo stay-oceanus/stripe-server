@@ -230,7 +230,7 @@ async function beds24CheckAvailability(checkin, checkout) {
 
     if (!arrival || !departure) return false;
 
-    return arrival < checkout && departure > checkin;
+    return arrival <= checkout && departure >= checkin;
   });
 
   console.log('🛏️ beds24CheckAvailability total ms =', Date.now() - startedAt);
@@ -906,7 +906,7 @@ async function beds24ApplyStayRules_(arrival, departure) {
   await beds24SetCalendarOverrideRange_(
     departure,
     departure,
-    'noCheckInOrCheckOut'
+    'blackout'
   );
 
   // 中日
