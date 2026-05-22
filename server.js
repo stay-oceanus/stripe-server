@@ -34,6 +34,7 @@ const gasWebhookUrl =
 
 // === その他環境変数 ===
 const port = process.env.PORT || 4242;
+const CAPTURE_CRON_SECRET = process.env.CAPTURE_CRON_SECRET || '';
 
 // ===== Beds24 API V2 =====
 const BEDS24_BASE_URL = process.env.BEDS24_BASE_URL || 'https://api.beds24.com/v2';
@@ -1375,6 +1376,103 @@ app.post('/create-checkout-session', async (req, res) => {
   } catch (error) {
     console.error('Error creating checkout session:', error);
     return res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ 48時間経過したmanual capture決済を自動キャプチャ
+app.get('/capture-due-payments', async (req, res) => {
+  try {
+    const secret = String(req.query.secret || '');
+
+    if (!CAPTURE_CRON_SECRET || secret !== CAPTURE_CRON_SECRET) {
+      return res.status(403).json({ ok: false, error: 'Forbidden' });
+    }
+
+    const now = Date.now();
+    const captured = [];
+    const skipped = [];
+    const failed = [];
+
+    let startingAfter = undefined;
+
+    while (true) {
+      const list = await stripe.paymentIntents.list({
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+
+      for (const pi of list.data) {
+        try {
+          // manual capture待ちだけ対象
+          if (pi.status !== 'requires_capture') {
+            skipped.push({ id: pi.id, reason: `status=${pi.status}` });
+            continue;
+          }
+
+          const sessions = await stripe.checkout.sessions.list({
+            payment_intent: pi.id,
+            limit: 1,
+          });
+          
+          const session = sessions.data[0];
+          
+          if (!session || session.metadata?.captureMethod !== 'manual') {
+            skipped.push({ id: pi.id, reason: 'not_manual_checkout_session' });
+            continue;
+          }
+
+          // 予約作成から48時間後を基準にする
+          const captureAt = (pi.created * 1000) + 48 * 60 * 60 * 1000;
+
+          if (now < captureAt) {
+            skipped.push({
+              id: pi.id,
+              reason: 'not_due_yet',
+              captureAt: new Date(captureAt).toISOString(),
+            });
+            continue;
+          }
+
+          const result = await stripe.paymentIntents.capture(pi.id);
+
+          captured.push({
+            id: pi.id,
+            status: result.status,
+            amount: result.amount,
+          });
+
+          console.log(`✅ Auto captured PaymentIntent: ${pi.id}`);
+
+        } catch (e) {
+          failed.push({
+            id: pi.id,
+            error: String(e.message || e),
+          });
+
+          console.error(`❌ Auto capture failed: ${pi.id}`, e.message);
+        }
+      }
+
+      if (!list.has_more) break;
+      startingAfter = list.data[list.data.length - 1].id;
+    }
+
+    return res.json({
+      ok: true,
+      mode,
+      capturedCount: captured.length,
+      failedCount: failed.length,
+      skippedCount: skipped.length,
+      captured,
+      failed,
+    });
+
+  } catch (e) {
+    console.error('❌ capture-due-payments failed:', e);
+    return res.status(500).json({
+      ok: false,
+      error: String(e.message || e),
+    });
   }
 });
 
