@@ -408,10 +408,23 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
       });
     
       const session = sessions.data[0];
+    
       if (session) {
         const pmTypes = session.payment_method_types || [];
         const paymentMethod = pmTypes.includes('konbini') ? 'konbini' : 'card';
         const md = session.metadata || {};
+    
+        // ========================================
+        // Stripeの実手数料を取得
+        // ========================================
+        const stripeFee = await getStripeFeeFromPaymentIntent_(
+          paymentIntent.id
+        );
+    
+        console.log(
+          `💰 Stripe fee for ${paymentIntent.id}:`,
+          stripeFee
+        );
     
         // ✅ Beds24の自社予約を支払い完了に更新
         const updated = await beds24UpdateBookingStatusBySessionId(
@@ -431,6 +444,9 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
           data: { object: session },
           payment_status: '支払い完了',
           payment_method: paymentMethod,
+    
+          // ★ Stripe実手数料
+          stripe_fee: stripeFee,
         };
     
         await forwardEventToGas(payload);
@@ -1015,6 +1031,73 @@ app.post('/beds24/webhook/booking', async (req, res) => {
   }
 });
 
+// ===== Stripeの実手数料を取得 =====
+// PaymentIntent → Charge → Balance Transaction → fee
+async function getStripeFeeFromPaymentIntent_(paymentIntentId) {
+  if (!paymentIntentId) return null;
+
+  try {
+    // PaymentIntentを取得
+    const paymentIntent = await stripe.paymentIntents.retrieve(
+      paymentIntentId,
+      {
+        expand: ['latest_charge.balance_transaction'],
+      }
+    );
+
+    const charge = paymentIntent.latest_charge;
+
+    if (!charge) {
+      console.log(
+        `ℹ️ Stripe fee: latest_charge not found for ${paymentIntentId}`
+      );
+      return null;
+    }
+
+    const balanceTransaction = charge.balance_transaction;
+
+    if (!balanceTransaction) {
+      console.log(
+        `ℹ️ Stripe fee: balance_transaction not found for ${paymentIntentId}`
+      );
+      return null;
+    }
+
+    // expandされていればオブジェクト
+    if (typeof balanceTransaction === 'object') {
+      const fee = Number(balanceTransaction.fee);
+
+      console.log(
+        `💰 Stripe fee: ${paymentIntentId} = ¥${fee}`
+      );
+
+      return Number.isFinite(fee) ? fee : null;
+    }
+
+    // 念のためIDだけ返ってきた場合
+    const bt = await stripe.balanceTransactions.retrieve(
+      balanceTransaction
+    );
+
+    const fee = Number(bt.fee);
+
+    console.log(
+      `💰 Stripe fee: ${paymentIntentId} = ¥${fee}`
+    );
+
+    return Number.isFinite(fee) ? fee : null;
+
+  } catch (e) {
+    console.error(
+      `⚠️ Stripe fee取得失敗: ${paymentIntentId}`,
+      e.message
+    );
+
+    // 手数料取得失敗だけで予約処理全体を失敗させない
+    return null;
+  }
+}
+
 // ✅ GAS転送関数
 async function forwardEventToGas(payload) {
   if (!gasWebhookUrl) {
@@ -1522,6 +1605,49 @@ app.post('/create-custom-session', async (req, res) => {
   } catch (error) {
     console.error('❌ Custom session error:', error.stack);
     return res.status(500).json({ error: 'Session creation failed' });
+  }
+});
+
+// ===== Stripe手数料取得テスト =====
+// 例: /test-stripe-fee?payment_intent=pi_xxxxx
+app.get('/test-stripe-fee', async (req, res) => {
+  try {
+    const paymentIntentId = String(
+      req.query.payment_intent || ''
+    ).trim();
+
+    if (!paymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        error: 'payment_intent を指定してください'
+      });
+    }
+
+    if (!paymentIntentId.startsWith('pi_')) {
+      return res.status(400).json({
+        success: false,
+        error: 'PaymentIntent IDが不正です'
+      });
+    }
+
+    const stripeFee =
+      await getStripeFeeFromPaymentIntent_(
+        paymentIntentId
+      );
+
+    return res.json({
+      success: true,
+      payment_intent: paymentIntentId,
+      stripe_fee: stripeFee
+    });
+
+  } catch (e) {
+    console.error('❌ Stripe fee test failed:', e);
+
+    return res.status(500).json({
+      success: false,
+      error: String(e.message || e)
+    });
   }
 });
 
