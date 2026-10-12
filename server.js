@@ -1608,49 +1608,6 @@ app.post('/create-custom-session', async (req, res) => {
   }
 });
 
-// ===== Stripe手数料取得テスト =====
-// 例: /test-stripe-fee?payment_intent=pi_xxxxx
-app.get('/test-stripe-fee', async (req, res) => {
-  try {
-    const paymentIntentId = String(
-      req.query.payment_intent || ''
-    ).trim();
-
-    if (!paymentIntentId) {
-      return res.status(400).json({
-        success: false,
-        error: 'payment_intent を指定してください'
-      });
-    }
-
-    if (!paymentIntentId.startsWith('pi_')) {
-      return res.status(400).json({
-        success: false,
-        error: 'PaymentIntent IDが不正です'
-      });
-    }
-
-    const stripeFee =
-      await getStripeFeeFromPaymentIntent_(
-        paymentIntentId
-      );
-
-    return res.json({
-      success: true,
-      payment_intent: paymentIntentId,
-      stripe_fee: stripeFee
-    });
-
-  } catch (e) {
-    console.error('❌ Stripe fee test failed:', e);
-
-    return res.status(500).json({
-      success: false,
-      error: String(e.message || e)
-    });
-  }
-});
-
 // ✅ ヘルスチェック
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', mode });
