@@ -987,7 +987,6 @@ app.post('/beds24/webhook/booking', async (req, res) => {
   try {
     // 1) 超簡易認証（URLトークン）
     const token = String(req.query.token || '');
-    if (BEDS24_WEBHOOK_TOKEN && token !== BEDS24_WEBHOOK_TOKEN) {
       return res.status(403).send('Forbidden');
     }
 
