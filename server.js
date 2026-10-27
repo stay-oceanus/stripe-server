@@ -8,6 +8,7 @@ const express = require('express');
 const cors = require('cors');
 const stripeLib = require('stripe');
 const crypto = require('crypto');
+const Pricing = require('./pricing.js');
 
 const app = express();
 
@@ -1384,6 +1385,60 @@ app.post('/create-checkout-session', async (req, res) => {
 
     if (!amount || isNaN(amount)) {
       return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    
+    // === 共通料金エンジンとの比較（検証モード） ===
+    // Stripeの請求金額はまだ変更しない
+    try {
+      const quote = Pricing.quote({
+        checkin: metadata.checkin,
+        checkout: metadata.checkout,
+        counts: {
+          adults: Number(metadata.adults),
+          child11: Number(metadata.child11),
+          child6: Number(metadata.child6),
+          child3: Number(metadata.child3)
+        },
+        bookingDate: new Intl.DateTimeFormat('sv-SE', {
+          timeZone: 'Asia/Tokyo',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(new Date())
+      });
+
+      // 予約ページから送られた金額
+      const clientAmount = Number(amount);
+      const clientTax = Number(metadata.accommodationTax || 0);
+
+      // pricing.js が宿泊税まで計算した金額
+      const calculatedAmount = quote.finalTotal;
+      const calculatedTax = quote.accommodationTax;
+
+      console.log('[PRICING_COMPARE]', {
+        checkin: metadata.checkin,
+        checkout: metadata.checkout,
+        clientAmount,
+        calculatedAmount,
+        difference: clientAmount - calculatedAmount,
+        lodgingSubtotal: quote.lodgingSubtotal,
+        discount: quote.totalDiscount,
+        cleaningFee: quote.cleaningFee,
+        clientTax,
+        calculatedTax,
+        taxDifference: clientTax - calculatedTax
+      });
+
+      if (
+        clientAmount !== calculatedAmount ||
+        clientTax !== calculatedTax
+      ) {
+        console.warn('[PRICING_MISMATCH] 料金または宿泊税が一致しません');
+      }
+
+    } catch (pricingError) {
+      console.error('[PRICING_COMPARE_ERROR]', pricingError.message);
     }
 
     // ✅ GAS整合性のため：サーバで確実にmetadataへ格納
