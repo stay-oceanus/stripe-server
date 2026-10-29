@@ -1651,7 +1651,7 @@ app.post('/create-custom-session', async (req, res) => {
           price_data: {
             currency: 'jpy',
             product_data: { name: '個別予約' },
-            unit_amount: serverAmount,
+            unit_amount: Number(amount),
           },
           quantity: 1,
         },
