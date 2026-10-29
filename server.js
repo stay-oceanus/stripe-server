@@ -1388,8 +1388,7 @@ app.post('/create-checkout-session', async (req, res) => {
     }
 
     
-    // === 共通料金エンジンとの比較（検証モード） ===
-    // Stripeの請求金額はまだ変更しない
+    // === 共通料金エンジンとの比較 ===
     try {
       const quote = Pricing.quote({
         checkin: metadata.checkin,
@@ -1444,7 +1443,6 @@ app.post('/create-checkout-session', async (req, res) => {
     // ✅ GAS整合性のため：サーバで確実にmetadataへ格納
     metadata.email = metadata.email || req.body.email || '';
     metadata.phone = metadata.phone || req.body.phone || req.body.tel || '';
-    metadata.total = metadata.total || req.body.amount || '';
     metadata.detail = metadata.detail || '';
     metadata.payMethod = metadata.payMethod || payMethod;
 
@@ -1628,7 +1626,7 @@ app.post('/create-custom-session', async (req, res) => {
           price_data: {
             currency: 'jpy',
             product_data: { name: '個別予約' },
-            unit_amount: Number(amount),
+            unit_amount: serverAmount,
           },
           quantity: 1,
         },
