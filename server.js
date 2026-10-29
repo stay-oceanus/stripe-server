@@ -1415,6 +1415,23 @@ app.post('/create-checkout-session', async (req, res) => {
       const calculatedAmount = quote.finalTotal;
       const calculatedTax = quote.accommodationTax;
 
+      // === 料金不一致の場合はStripe決済を停止 ===
+      if (
+        Number(amount) !== calculatedAmount ||
+        Number(metadata.accommodationTax || 0) !== calculatedTax
+      ) {
+        console.error('[PRICING_REJECTED]', {
+          clientAmount: Number(amount),
+          calculatedAmount,
+          clientTax: Number(metadata.accommodationTax || 0),
+          calculatedTax
+        });
+
+        return res.status(409).json({
+          error: '料金が更新されました。予約ページから再度お手続きください。'
+        });
+      }
+
       console.log('[PRICING_COMPARE]', {
         checkin: metadata.checkin,
         checkout: metadata.checkout,
@@ -1434,10 +1451,18 @@ app.post('/create-checkout-session', async (req, res) => {
         clientTax !== calculatedTax
       ) {
         console.warn('[PRICING_MISMATCH] 料金または宿泊税が一致しません');
+      
+        return res.status(409).json({
+          error: '料金が更新されました。予約ページから再度お手続きください。'
+        });
       }
 
     } catch (pricingError) {
-      console.error('[PRICING_COMPARE_ERROR]', pricingError.message);
+      console.error('[PRICING_COMPARE_ERROR]', pricingError);
+    
+      return res.status(400).json({
+        error: '料金を確認できませんでした。予約内容をご確認ください。'
+      });
     }
 
     // ✅ GAS整合性のため：サーバで確実にmetadataへ格納
