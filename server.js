@@ -1349,6 +1349,56 @@ app.post('/cancel/confirm', async (req, res) => {
   }
 });
 
+
+// ========================================
+// 料金見積もりAPI（pricing.jsを共通利用）
+// ========================================
+app.post('/api/quote', (req, res) => {
+  try {
+    const { checkin, checkout, counts } = req.body || {};
+
+    // 予約日付はブラウザから受け取らず、サーバーの日本時間を使用
+    const bookingDate = new Intl.DateTimeFormat('sv-SE', {
+      timeZone: 'Asia/Tokyo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+
+    const quote = Pricing.quote({
+      checkin,
+      checkout,
+      counts,
+      bookingDate
+    });
+
+    res.set('Cache-Control', 'no-store');
+
+    return res.json({
+      checkin: quote.checkin,
+      checkout: quote.checkout,
+      nights: quote.nights,
+      daily: quote.daily,
+      lodgingSubtotal: quote.lodgingSubtotal,
+      discounts: quote.discounts,
+      totalDiscount: quote.totalDiscount,
+      lodgingAfterDiscount: quote.lodgingAfterDiscount,
+      cleaningFee: quote.cleaningFee,
+      totalBeforeTax: quote.totalBeforeTax,
+      accommodationTax: quote.accommodationTax,
+      finalTotal: quote.finalTotal
+    });
+
+  } catch (error) {
+    console.error('[QUOTE_ERROR]', error.message);
+
+    return res.status(400).json({
+      error: '料金を計算できませんでした。日付と人数をご確認ください。'
+    });
+  }
+});
+
+
 // ✅ Checkout セッション作成
 app.post('/create-checkout-session', async (req, res) => {
   try {
